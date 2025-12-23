@@ -32,11 +32,14 @@ public class JwtAuthWebFilter implements WebFilter {
             String token = authHeader.substring(7);
             try {
                 if (jwtService.validateToken(token)) {
-                    String uid = jwtService.extractUserId(token);
+                    String username = jwtService.extractUsername(token);
                     String role = jwtService.extractRole(token);
-                    if (uid != null && role != null) {
+                    if (username != null && role != null) {
                         GrantedAuthority authority = new SimpleGrantedAuthority(role);
-                        Authentication auth = new UsernamePasswordAuthenticationToken(uid, null, List.of(authority));
+
+                        Authentication auth = new UsernamePasswordAuthenticationToken(
+                                username, null, List.of(authority));
+
                         SecurityContextImpl context = new SecurityContextImpl(auth);
                         return chain.filter(exchange)
                                 .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(context)));

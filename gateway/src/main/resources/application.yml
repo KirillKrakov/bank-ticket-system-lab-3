@@ -1,5 +1,82 @@
+server:
+  port: 8080
+
 spring:
-  config:
-    import: ${SPRING_CONFIG_IMPORT:optional:configserver:http://localhost:8888}
   application:
     name: gateway
+  cloud:
+    discovery:
+      enabled: true
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: auth-service
+          uri: lb://USER-SERVICE
+          predicates:
+            - Path=/api/v1/auth/**
+        - id: user-service
+          uri: lb://USER-SERVICE
+          predicates:
+            - Path=/api/v1/users/**
+        - id: product-service
+          uri: lb://PRODUCT-SERVICE
+          predicates:
+            - Path=/api/v1/products/**
+        - id: application-service
+          uri: lb://APPLICATION-SERVICE
+          predicates:
+            - Path=/api/v1/applications/**
+        - id: assignment-service
+          uri: lb://ASSIGNMENT-SERVICE
+          predicates:
+            - Path=/api/v1/assignments/**
+        - id: tag-service
+          uri: lb://TAG-SERVICE
+          predicates:
+            - Path=/api/v1/tags/**
+
+springdoc:
+  api-docs:
+    enabled: true
+    groups:
+      enabled: true
+  swagger-ui:
+    enabled: true
+    urls:
+      - name: User Service
+        url: /user-service/v3/api-docs
+      - name: Application Service
+        url: /application-service/v3/api-docs
+      - name: Product Service
+        url: /product-service/v3/api-docs
+      - name: Assignment Service
+        url: /assignment-service/v3/api-docs
+      - name: Tag Service
+        url: /tag-service/v3/api-docs
+    disable-swagger-default-url: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    doc-expansion: none
+    validator-url: ""
+    use-root-path: false
+    query-config-enabled: true
+    display-request-duration: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${server.port}
+
+logging:
+  level:
+    org.springframework.cloud.gateway: DEBUG
+    org.springframework.cloud.loadbalancer: DEBUG
+    com.netflix.discovery: INFO
+    org.springframework.web: DEBUG
