@@ -5,15 +5,13 @@ import com.example.applicationservice.exception.*;
 import com.example.applicationservice.service.ApplicationService;
 import com.example.applicationservice.util.ApplicationPage;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.responses.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpHeaders;
+import org.slf4j.*;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -34,7 +32,7 @@ public class ApplicationController {
         this.applicationService = applicationService;
     }
 
-    // Create: POST "/api/v1/applications" + ApplicationRequest(applicantId, productId, documents, tags)
+    // Create: POST "/api/v1/applications"
     @Operation(summary = "Create a new application", description = "Registers a new application: applicantId, productId, documents, tags")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "201", description = "Application created successfully"),
@@ -46,20 +44,27 @@ public class ApplicationController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Mono<ApplicationDto> createApplication(
-            @Valid @RequestBody ApplicationRequest request) {
+            @Valid @RequestBody ApplicationRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.info("Creating new application for applicant: {}, product: {}",
-                request.getApplicantId(), request.getProductId());
+        log.info("Creating new application for applicant: {}, product: {} (auth principal {})",
+                request.getApplicantId(), request.getProductId(), jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.createApplication(request);
+        // Extract actor info
+        if (jwt == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+
+        // derive role from token
+        String roleStr = jwt.getClaimAsString("role");
+        // roles claim might be a list - ApplicationService will accept roleStr or null
+        return applicationService.createApplication(request, actorId, roleStr);
     }
 
-    // ReadAll: GET "/api/v1/applications?page=0&size=20"
-    @Operation(summary = "Read all applications with pagination", description = "Returns a paginated list of applications")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "List of applications"),
-            @ApiResponse(responseCode = "400", description = "Page size too large")
-    })
+    // ReadAll
     @GetMapping
     public Flux<ApplicationDto> listApplications(
             @RequestParam(defaultValue = "0") int page,
@@ -70,24 +75,14 @@ public class ApplicationController {
         return applicationService.findAll(page, size);
     }
 
-    // Read: GET "/api/v1/applications/{id}"
-    @Operation(summary = "Read certain application by its ID", description = "Returns data about a single application")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "Application data"),
-            @ApiResponse(responseCode = "404", description = "Application not found")
-    })
+    // Read
     @GetMapping("/{id}")
     public Mono<ApplicationDto> getApplication(@PathVariable UUID id) {
         log.debug("Getting application: {}", id);
         return applicationService.findById(id);
     }
 
-    // ReadAllByStream: GET "/api/v1/applications/stream?cursor=<base64>&limit=20"
-    @Operation(summary = "Read all applications with endless scrolling", description = "Returns endless scrolling of the list of applications by cursor")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "List of applications"),
-            @ApiResponse(responseCode = "400", description = "Invalid cursor or limit too large")
-    })
+    // Stream
     @GetMapping("/stream")
     public Mono<ApplicationPage> streamApplications(
             @RequestParam(required = false) String cursor,
@@ -99,143 +94,123 @@ public class ApplicationController {
         return applicationService.streamWithNextCursor(cursor, limit);
     }
 
-    // Update(addTags): PUT "/api/v1/applications/{id}/tags?actorId={actorId}"
-    @Operation(summary = "Add tags to application", description = "Add tags to application if actor has sufficient rights")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "204", description = "Tags added successfully"),
-            @ApiResponse(responseCode = "400", description = "Invalid request"),
-            @ApiResponse(responseCode = "403", description = "Insufficient permissions"),
-            @ApiResponse(responseCode = "404", description = "Application not found"),
-            @ApiResponse(responseCode = "409", description = "Failed to process tags"),
-            @ApiResponse(responseCode = "503", description = "Tag service is unavailable now")
-    })
+    // Add tags
     @PutMapping("/{id}/tags")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> addTags(
             @PathVariable UUID id,
             @RequestBody List<String> tags,
-            @RequestParam("actorId") UUID actorId) {
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.info("Adding tags to application {} by actor {}", id, actorId);
+        log.info("Adding tags to application {} (auth principal {})", id, jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.attachTags(id, tags, actorId);
+        if (jwt == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+        String roleStr = jwt.getClaimAsString("role");
+
+        return applicationService.attachTags(id, tags, actorId, roleStr);
     }
 
-    // Delete(deleteTags): DELETE "/api/v1/applications/{id}/tags?actorId={actorId}"
-    @Operation(summary = "Remove tags from application", description = "Remove tags from application if actor has sufficient rights")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "204", description = "Tags removed successfully"),
-            @ApiResponse(responseCode = "400", description = "Invalid request"),
-            @ApiResponse(responseCode = "403", description = "Insufficient permissions"),
-            @ApiResponse(responseCode = "404", description = "Application not found"),
-            @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
-    })
+    // Remove tags
     @DeleteMapping("/{id}/tags")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> removeTags(
             @PathVariable UUID id,
             @RequestBody List<String> tags,
-            @RequestParam("actorId") UUID actorId) {
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.info("Removing tags from application {} by actor {}", id, actorId);
+        log.info("Removing tags from application {} (auth principal {})", id, jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.removeTags(id, tags, actorId);
+        if (jwt == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+        String roleStr = jwt.getClaimAsString("role");
+
+        return applicationService.removeTags(id, tags, actorId, roleStr);
     }
 
-    // Update(changeStatus): PUT "/api/v1/applications/{id}/status?actorId={actorId}"
-    @Operation(summary = "Change application status", description = "Change application status if actor has sufficient rights")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "Status changed successfully"),
-            @ApiResponse(responseCode = "400", description = "Invalid status"),
-            @ApiResponse(responseCode = "403", description = "Insufficient permissions"),
-            @ApiResponse(responseCode = "404", description = "Application not found"),
-            @ApiResponse(responseCode = "409", description = "Conflict (e.g., manager changing own application)"),
-            @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
-    })
+    // Change status
     @PutMapping("/{id}/status")
     public Mono<ApplicationDto> changeStatus(
             @PathVariable UUID id,
             @RequestBody String status,
-            @RequestParam("actorId") UUID actorId) {
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.info("Changing status of application {} to '{}' by actor {}", id, status, actorId);
+        log.info("Changing status of application {} to '{}' (auth principal {})", id, status, jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.changeStatus(id, status, actorId);
+        if (jwt == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+        String roleStr = jwt.getClaimAsString("role");
+
+        return applicationService.changeStatus(id, status, actorId, roleStr);
     }
 
-    // Delete: DELETE "/api/v1/applications/{id}?actorId={actorId}"
-    @Operation(summary = "Delete application", description = "Delete application if actor has sufficient rights")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "204", description = "Application deleted successfully"),
-            @ApiResponse(responseCode = "403", description = "Insufficient permissions"),
-            @ApiResponse(responseCode = "404", description = "Application not found"),
-            @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
-    })
+    // Delete application
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> deleteApplication(
             @PathVariable UUID id,
-            @RequestParam("actorId") UUID actorId) {
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.info("Deleting application {} by actor {}", id, actorId);
+        log.info("Deleting application {} (auth principal {})", id, jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.deleteApplication(id, actorId);
+        if (jwt == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+
+        return applicationService.deleteApplication(id, actorId, jwt.getClaimAsString("role"));
     }
 
-    // ReadHistory: GET "/api/v1/applications/{id}/history?actorId={actorId}"
-    @Operation(summary = "Get application history", description = "Get application change history if actor has sufficient rights")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "Application history"),
-            @ApiResponse(responseCode = "403", description = "Insufficient permissions"),
-            @ApiResponse(responseCode = "404", description = "Application not found"),
-            @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
-    })
+    // Get history
     @GetMapping("/{id}/history")
     public Flux<ApplicationHistoryDto> getApplicationHistory(
             @PathVariable UUID id,
-            @RequestParam("actorId") UUID actorId) {
+            @AuthenticationPrincipal Jwt jwt) {
 
-        log.debug("Getting history for application {} by actor {}", id, actorId);
+        log.debug("Getting history for application {} (auth principal {})", id, jwt != null ? jwt.getSubject() : "anonymous");
 
-        return applicationService.listHistory(id, actorId);
+        if (jwt == null) {
+            return Flux.error(new UnauthorizedException("Authentication required"));
+        }
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+
+        return applicationService.listHistory(id, actorId, jwt.getClaimAsString("role"));
     }
 
-    // Internal endpoint для user-service
-    @Operation(summary = "Delete applications by user ID (internal)",
-            description = "Delete all applications for a user (internal use only)")
+    // Internal endpoints - keep as before (internal calls)
     @DeleteMapping("/internal/by-user")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteApplicationsByUserId(
-            @RequestParam("userId") UUID userId) {
-
+    public Mono<Void> deleteApplicationsByUserId(@RequestParam("userId") UUID userId) {
         log.info("Deleting all applications for user {} (internal call)", userId);
-
         return applicationService.deleteApplicationsByUserId(userId);
     }
 
-    // Internal endpoint для user-service
-    @Operation(summary = "Delete applications by product ID (internal)",
-            description = "Delete all applications for a product (internal use only)")
     @DeleteMapping("/internal/by-product")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteApplicationsByProductId(
-            @RequestParam("productId") UUID productId) {
+    public Mono<Void> deleteApplicationsByProductId(@RequestParam("productId") UUID productId) {
         log.info("Deleting all applications for product {} (internal call)", productId);
         return applicationService.deleteApplicationsByProductId(productId);
     }
 
-    // Internal endpoint для tag-service
-    @Operation(summary = "Get applications by tag", description = "Returns all applications with specified tag")
-    @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "List of applications with the tag"),
-            @ApiResponse(responseCode = "400", description = "Invalid tag name")
-    })
     @GetMapping("/by-tag")
-    public Mono<List<ApplicationInfoDto>> getApplicationsByTag(
-            @RequestParam("tag") String tagName) {
-
+    public Mono<List<ApplicationInfoDto>> getApplicationsByTag(@RequestParam("tag") String tagName) {
         log.debug("Getting applications with tag: {}", tagName);
-
         return applicationService.findApplicationsByTag(tagName);
     }
 }

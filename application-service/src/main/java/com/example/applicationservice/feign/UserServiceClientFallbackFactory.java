@@ -15,11 +15,6 @@ public class UserServiceClientFallbackFactory implements FallbackFactory<UserSer
             public Boolean userExists(UUID id) {
                 throw new ServiceUnavailableException("User service is unavailable now");
             }
-
-            @Override
-            public UserRole getUserRole(UUID id) {
-                throw new ServiceUnavailableException("User service is unavailable now");
-            }
         };
     }
 }

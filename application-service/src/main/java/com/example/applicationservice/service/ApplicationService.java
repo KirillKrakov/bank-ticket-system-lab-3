@@ -9,8 +9,7 @@ import com.example.applicationservice.model.enums.UserRole;
 import com.example.applicationservice.repository.*;
 import com.example.applicationservice.util.ApplicationPage;
 import com.example.applicationservice.util.CursorUtil;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.slf4j.*;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -51,8 +50,13 @@ public class ApplicationService {
         this.tagServiceClient = tagServiceClient;
     }
 
+    /**
+     * Create application.
+     * actorId - id of the authenticated user (from JWT)
+     * actorRoleClaim - role string from JWT (may be null)
+     */
     @Transactional
-    public Mono<ApplicationDto> createApplication(ApplicationRequest req) {
+    public Mono<ApplicationDto> createApplication(ApplicationRequest req, UUID actorId, String actorRoleClaim) {
         if (req == null) {
             return Mono.error(new BadRequestException("Request is required"));
         }
@@ -64,31 +68,48 @@ public class ApplicationService {
             return Mono.error(new BadRequestException("Applicant ID and Product ID are required"));
         }
 
+        // Authorization: if actor is not ADMIN, they may only create application for themselves
+        boolean isAdmin = "ROLE_ADMIN".equals(actorRoleClaim);
+        if (!isAdmin && !actorId.equals(applicantId)) {
+            return Mono.error(new ForbiddenException("You can create an application only for yourself"));
+        }
+
+        // Verify applicant exists (call user-service) - Feign interceptor will forward Authorization header
         return Mono.fromCallable(() -> {
-                try {
-                    return userServiceClient.userExists(applicantId);
-                } catch (ServiceUnavailableException e) {
-                    throw new ServiceUnavailableException("User service is unavailable now");
-                } catch (NotFoundException e){
-                    throw new NotFoundException("Applicant with this ID not found");
-                }}).subscribeOn(Schedulers.boundedElastic())
+                    try {
+                        Boolean exists = userServiceClient.userExists(applicantId);
+                        return exists;
+                    } catch (Exception ex) {
+                        log.warn("ошибка при запросе к user-service");
+                        log.warn(ex.getMessage());
+                        throw new ServiceUnavailableException("User service is unavailable now");
+                    }
+                }).subscribeOn(Schedulers.boundedElastic())
                 .flatMap(userExists -> {
+                    if (userExists == null) {
+                        return Mono.error(new ServiceUnavailableException("User service is unavailable now"));
+                    }
                     if (!userExists) {
                         return Mono.error(new NotFoundException("Applicant with this ID not found"));
                     }
+                    // verify product exists
                     return Mono.fromCallable(() -> {
                         try {
-                            return productServiceClient.productExists(productId);
-                        } catch (ServiceUnavailableException e) {
+                            Boolean pExists = productServiceClient.productExists(productId);
+                            return pExists;
+                        } catch (Exception ex) {
                             throw new ServiceUnavailableException("Product service is unavailable now");
-                        } catch (NotFoundException e){
-                            throw new NotFoundException("Product with this ID not found");
-                        }}).subscribeOn(Schedulers.boundedElastic());
+                        }
+                    }).subscribeOn(Schedulers.boundedElastic());
                 })
                 .flatMap(productExists -> {
+                    if (productExists == null) {
+                        return Mono.error(new ServiceUnavailableException("Product service is unavailable now"));
+                    }
                     if (!productExists) {
                         return Mono.error(new NotFoundException("Product with this ID not found"));
                     }
+
                     return Mono.fromCallable(() -> {
                         Application app = new Application();
                         app.setId(UUID.randomUUID());
@@ -96,6 +117,7 @@ public class ApplicationService {
                         app.setProductId(productId);
                         app.setStatus(ApplicationStatus.SUBMITTED);
                         app.setCreatedAt(Instant.now());
+
                         if (req.getDocuments() != null) {
                             List<Document> docs = req.getDocuments().stream()
                                     .map(dreq -> {
@@ -130,25 +152,27 @@ public class ApplicationService {
                     List<String> tagNames = req.getTags() != null ? req.getTags() : List.of();
                     if (!tagNames.isEmpty()) {
                         return Mono.fromCallable(() -> {
-                            try {
-                                return tagServiceClient.createOrGetTagsBatch(tagNames);
-                            } catch (ServiceUnavailableException e) {
-                                throw new ServiceUnavailableException("Tag service is unavailable now. Application saved without tags");
-                            }}).subscribeOn(Schedulers.boundedElastic())
+                                    try {
+                                        List<TagDto> tagDtos = tagServiceClient.createOrGetTagsBatch(tagNames);
+                                        return tagDtos;
+                                    } catch (Exception ex) {
+                                        throw new ServiceUnavailableException("Tag service is unavailable now. Application saved without tags");
+                                    }
+                                }).subscribeOn(Schedulers.boundedElastic())
                                 .flatMap(tagDtos -> {
                                     if (tagDtos == null) {
                                         return Mono.error(new ServiceUnavailableException("Tag service is unavailable now. Application saved without tags"));
                                     }
                                     return Mono.fromCallable(() -> {
-                                    Set<String> tagNamesSet = tagDtos.stream()
-                                            .map(TagDto::getName)
-                                            .collect(Collectors.toSet());
-                                    app.setTags(tagNamesSet);
-                                    applicationRepository.save(app);
-                                    log.info("Added {} tags to application {}", tagNamesSet.size(), app.getId());
-                                    return app;
+                                        Set<String> tagNamesSet = tagDtos.stream()
+                                                .map(TagDto::getName)
+                                                .collect(Collectors.toSet());
+                                        app.setTags(tagNamesSet);
+                                        applicationRepository.save(app);
+                                        log.info("Added {} tags to application {}", tagNamesSet.size(), app.getId());
+                                        return app;
+                                    }).subscribeOn(Schedulers.boundedElastic());
                                 });
-                                }).subscribeOn(Schedulers.boundedElastic());
                     }
                     return Mono.just(app);
                 })
@@ -261,35 +285,10 @@ public class ApplicationService {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
+    // attachTags now receives actorId and actorRoleClaim
     @Transactional
-    public Mono<Void> attachTags(UUID applicationId, List<String> tagNames, UUID actorId) {
-        return validateActor(applicationId, actorId)
-                .flatMap(valid -> {
-                    if (!valid) {
-                        return Mono.error(new ForbiddenException("Insufficient permissions"));
-                    }
-                    return Mono.fromCallable(() -> {
-                                Application app = applicationRepository.findByIdWithTags(applicationId)
-                                        .orElseThrow(() -> new NotFoundException("Application not found"));
-                                try {
-                                    List<TagDto> tagDtos = tagServiceClient.createOrGetTagsBatch(tagNames);
-                                    Set<String> newTags = tagDtos.stream()
-                                            .map(TagDto::getName)
-                                            .collect(Collectors.toSet());
-                                    app.getTags().addAll(newTags);
-                                    applicationRepository.save(app);
-                                    log.info("Added {} tags to existed application {}", newTags.size(), applicationId);
-                                    return (Void) null;
-                                } catch (ServiceUnavailableException e) {
-                                    throw new ServiceUnavailableException("Tag service is unavailable now");
-                                }
-                            }).subscribeOn(Schedulers.boundedElastic());
-                });
-    }
-
-    @Transactional
-    public Mono<Void> removeTags(UUID applicationId, List<String> tagNames, UUID actorId) {
-        return validateActor(applicationId, actorId)
+    public Mono<Void> attachTags(UUID applicationId, List<String> tagNames, UUID actorId, String actorRoleClaim) {
+        return validateActor(applicationId, actorId, actorRoleClaim)
                 .flatMap(valid -> {
                     if (!valid) {
                         return Mono.error(new ForbiddenException("Insufficient permissions"));
@@ -297,7 +296,36 @@ public class ApplicationService {
                     return Mono.fromCallable(() -> {
                         Application app = applicationRepository.findByIdWithTags(applicationId)
                                 .orElseThrow(() -> new NotFoundException("Application not found"));
-                        tagNames.forEach(app.getTags()::remove);
+                        try {
+                            List<TagDto> tagDtos = tagServiceClient.createOrGetTagsBatch(tagNames);
+                            Set<String> newTags = tagDtos.stream()
+                                    .map(TagDto::getName)
+                                    .collect(Collectors.toSet());
+                            if (app.getTags() == null) app.setTags(new HashSet<>());
+                            app.getTags().addAll(newTags);
+                            applicationRepository.save(app);
+                            log.info("Added {} tags to existing application {}", newTags.size(), applicationId);
+                            return (Void) null;
+                        } catch (Exception e) {
+                            throw new ServiceUnavailableException("Tag service is unavailable now");
+                        }
+                    }).subscribeOn(Schedulers.boundedElastic());
+                });
+    }
+
+    @Transactional
+    public Mono<Void> removeTags(UUID applicationId, List<String> tagNames, UUID actorId, String actorRoleClaim) {
+        return validateActor(applicationId, actorId, actorRoleClaim)
+                .flatMap(valid -> {
+                    if (!valid) {
+                        return Mono.error(new ForbiddenException("Insufficient permissions"));
+                    }
+                    return Mono.fromCallable(() -> {
+                        Application app = applicationRepository.findByIdWithTags(applicationId)
+                                .orElseThrow(() -> new NotFoundException("Application not found"));
+                        tagNames.forEach(n -> {
+                            if (app.getTags() != null) app.getTags().remove(n);
+                        });
                         applicationRepository.save(app);
                         log.info("Removed {} tags from application {}", tagNames.size(), applicationId);
                         return (Void) null;
@@ -306,79 +334,74 @@ public class ApplicationService {
     }
 
     @Transactional
-    public Mono<ApplicationDto> changeStatus(UUID applicationId, String status, UUID actorId) {
-        return Mono.fromCallable(() -> {
-            try {
-                return userServiceClient.getUserRole(actorId);
-            } catch (ServiceUnavailableException e) {
-                throw new ServiceUnavailableException("User service is unavailable now");
-            }
-        }).subscribeOn(Schedulers.boundedElastic())
-        .flatMap(role -> {
-        boolean isManagerOrAdmin = "ROLE_ADMIN".equals(role.name()) || "ROLE_MANAGER".equals(role.name());
-        if (!isManagerOrAdmin) {
-             return Mono.error(new ForbiddenException("Only admin or manager can change application status"));
+    public Mono<ApplicationDto> changeStatus(UUID applicationId, String status, UUID actorId, String actorRoleClaim) {
+        if (actorId == null) {
+            return Mono.error(new UnauthorizedException("Authentication required"));
         }
-         return Mono.fromCallable(() -> {
-             Application basicApp = applicationRepository.findById(applicationId)
-                     .orElseThrow(() -> new NotFoundException("Application not found"));
-             if (basicApp.getApplicantId().equals(actorId) && "ROLE_MANAGER".equals(role.name())) {
-                 throw new ConflictException("Managers cannot change status of their own applications");
-             }
-             Optional<Application> appWithDocs = applicationRepository.findByIdWithDocuments(applicationId);
-             Application app = appWithDocs.orElse(basicApp);
-             Optional<Application> appWithTags = applicationRepository.findByIdWithTags(applicationId);
-             appWithTags.ifPresent(appWithTag -> app.setTags(appWithTag.getTags()));
-             ApplicationStatus newStatus;
-             try {
-                 newStatus = ApplicationStatus.valueOf(status.trim().toUpperCase());
-             } catch (IllegalArgumentException e) {
-                 throw new ConflictException(
-                         "Invalid status. Valid values: DRAFT, SUBMITTED, IN_REVIEW, APPROVED, REJECTED");
-             }
-             ApplicationStatus oldStatus = app.getStatus();
-             if (oldStatus != newStatus) {
-                 app.setStatus(newStatus);
-                 app.setUpdatedAt(Instant.now());
-                 applicationRepository.save(app);
-                 ApplicationHistory hist = new ApplicationHistory();
-                 hist.setId(UUID.randomUUID());
-                 hist.setApplication(app);
-                 hist.setOldStatus(oldStatus);
-                 hist.setNewStatus(newStatus);
-                 hist.setChangedBy(role);
-                 hist.setChangedAt(Instant.now());
-                 applicationHistoryRepository.save(hist);
-                 log.info("Application {} status changed from {} to {} by {}",
-                         applicationId, oldStatus, newStatus, actorId);
-             }
-             return toDto(app);
-         }).subscribeOn(Schedulers.boundedElastic());
-        });
+        // derive role
+        boolean isManager = "ROLE_MANAGER".equals(actorRoleClaim);
+        boolean isAdmin = "ROLE_ADMIN".equals(actorRoleClaim);
+        if (!isManager && !isAdmin) {
+            return Mono.error(new ForbiddenException("Only admin or manager can change application status"));
+        }
+
+        return Mono.fromCallable(() -> {
+            Application basicApp = applicationRepository.findById(applicationId)
+                    .orElseThrow(() -> new NotFoundException("Application not found"));
+            if (basicApp.getApplicantId().equals(actorId) && isManager) {
+                throw new ConflictException("Managers cannot change status of their own applications");
+            }
+            Optional<Application> appWithDocs = applicationRepository.findByIdWithDocuments(applicationId);
+            Application app = appWithDocs.orElse(basicApp);
+            Optional<Application> appWithTags = application_repository_findByIdWithTags_safe(applicationId);
+            appWithTags.ifPresent(appWithTag -> app.setTags(appWithTag.getTags()));
+            ApplicationStatus newStatus;
+            try {
+                newStatus = ApplicationStatus.valueOf(status.trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new ConflictException(
+                        "Invalid status. Valid values: DRAFT, SUBMITTED, IN_REVIEW, APPROVED, REJECTED");
+            }
+            ApplicationStatus oldStatus = app.getStatus();
+            if (oldStatus != newStatus) {
+                app.setStatus(newStatus);
+                app.setUpdatedAt(Instant.now());
+                applicationRepository.save(app);
+                ApplicationHistory hist = new ApplicationHistory();
+                hist.setId(UUID.randomUUID());
+                hist.setApplication(app);
+                hist.setOldStatus(oldStatus);
+                hist.setNewStatus(newStatus);
+                // record who changed - use enum from actorRoleClaim if possible, else use ADMIN as fallback
+                hist.setChangedBy(enumFromRoleString(actorRoleClaim));
+                hist.setChangedAt(Instant.now());
+                applicationHistoryRepository.save(hist);
+                log.info("Application {} status changed from {} to {} by {}",
+                        applicationId, oldStatus, newStatus, actorId);
+            }
+            return toDto(app);
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @Transactional
-    public Mono<Void> deleteApplication(UUID applicationId, UUID actorId) {
-        return validateActorIsAdmin(actorId)
-                .flatMap(isAdmin -> {
-                    if (!isAdmin) {
-                        return Mono.error(new ForbiddenException("Only admin can delete applications"));
-                    }
-                    return Mono.fromCallable(() -> {
-                        // Удаляем в правильном порядке
-                        documentRepository.deleteByApplicationId(applicationId);
-                        applicationHistoryRepository.deleteByApplicationId(applicationId);
-                        applicationRepository.deleteTagsByApplicationId(applicationId);
-                        applicationRepository.deleteById(applicationId);
+    public Mono<Void> deleteApplication(UUID applicationId, UUID actorId, String actorRoleClaim) {
+        boolean isAdmin = "ROLE_ADMIN".equals(actorRoleClaim);
+        if (!isAdmin) {
+            return Mono.error(new ForbiddenException("Only admin can delete applications"));
+        }
+        return Mono.fromCallable(() -> {
+            documentRepository.deleteByApplicationId(applicationId);
+            applicationHistoryRepository.deleteByApplicationId(applicationId);
+            applicationRepository.deleteTagsByApplicationId(applicationId);
+            applicationRepository.deleteById(applicationId);
 
-                        log.info("Application deleted: {}", applicationId);
-                        return (Void) null;
-                    }).subscribeOn(Schedulers.boundedElastic());
-                });
+            log.info("Application deleted: {}", applicationId);
+            return (Void) null;
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Flux<ApplicationHistoryDto> listHistory(UUID applicationId, UUID actorId) {
-        return validateActorCanViewHistory(applicationId, actorId)
+    public Flux<ApplicationHistoryDto> listHistory(UUID applicationId, UUID actorId, String actorRoleClaim) {
+        return validateActorCanViewHistory(applicationId, actorId, actorRoleClaim)
                 .flatMapMany(canView -> {
                     if (!canView) {
                         return Flux.error(new ForbiddenException("Insufficient permissions to view history"));
@@ -394,7 +417,6 @@ public class ApplicationService {
                 });
     }
 
-    // Внутренний endpoint для user-service
     @Transactional
     public Mono<Void> deleteApplicationsByUserId(UUID userId) {
         return Mono.fromCallable(() -> {
@@ -411,7 +433,6 @@ public class ApplicationService {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    // Внутренний endpoint для product-service
     @Transactional
     public Mono<Void> deleteApplicationsByProductId(UUID productId) {
         return Mono.fromCallable(() -> {
@@ -446,6 +467,7 @@ public class ApplicationService {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
+    // helper mapping methods unchanged
     private ApplicationInfoDto toInfoDto(Application app) {
         ApplicationInfoDto dto = new ApplicationInfoDto();
         dto.setId(app.getId());
@@ -456,7 +478,6 @@ public class ApplicationService {
         return dto;
     }
 
-    // Вспомогательные методы
     private ApplicationDto toDto(Application app) {
         ApplicationDto dto = new ApplicationDto();
         dto.setId(app.getId());
@@ -497,61 +518,60 @@ public class ApplicationService {
         return dto;
     }
 
-    // Обновляем validateActor метод
-    private Mono<Boolean> validateActor(UUID applicationId, UUID actorId) {
+    // validateActor: use actorRoleClaim passed from JWT instead of calling userServiceClient.getUserRole(...)
+    private Mono<Boolean> validateActor(UUID applicationId, UUID actorId, String actorRoleClaim) {
         return findById(applicationId)
-                .flatMap(app ->
-                        Mono.fromCallable(() -> {
-                            try {
-                                return userServiceClient.getUserRole(actorId);
-                            } catch (ServiceUnavailableException e) {
-                                throw new ServiceUnavailableException("User service is unavailable");
-                            }})
-                                .subscribeOn(Schedulers.boundedElastic())
-                                .map(role -> {
-                                    if (app.getApplicantId().equals(actorId)) {
-                                        return true;
-                                    }
-                                    return "ROLE_ADMIN".equals(role.name()) || "ROLE_MANAGER".equals(role.name());
-                                })
-                                .defaultIfEmpty(false)
-                )
+                .flatMap(app -> Mono.fromCallable(() -> {
+                    // if actor is the applicant -> allowed
+                    if (app.getApplicantId().equals(actorId)) {
+                        return true;
+                    }
+                    // if actor has admin or manager role (from token) -> allowed
+                    if ("ROLE_ADMIN".equals(actorRoleClaim) || "ROLE_MANAGER".equals(actorRoleClaim)) {
+                        return true;
+                    }
+                    return false;
+                }).subscribeOn(Schedulers.boundedElastic()))
                 .defaultIfEmpty(false);
     }
 
-    private Mono<Boolean> validateActorIsAdmin(UUID actorId) {
-        return Mono.fromCallable(() -> {
-            try {
-                return userServiceClient.getUserRole(actorId);
-            } catch (ServiceUnavailableException e) {
-                throw new ServiceUnavailableException("User service is unavailable");
-            }}).subscribeOn(Schedulers.boundedElastic())
-                .map(role -> "ROLE_ADMIN".equals(role.name()))
+    private Mono<Boolean> validateActorIsAdmin(UUID actorId, String actorRoleClaim) {
+        return Mono.fromCallable(() -> "ROLE_ADMIN".equals(actorRoleClaim))
+                .subscribeOn(Schedulers.boundedElastic())
                 .defaultIfEmpty(false);
     }
 
-    private Mono<Boolean> validateActorCanViewHistory(UUID applicationId, UUID actorId) {
+    private Mono<Boolean> validateActorCanViewHistory(UUID applicationId, UUID actorId, String actorRoleClaim) {
         return findById(applicationId)
-                .flatMap(app ->
-                        Mono.fromCallable(() -> {
-                            try {
-                                return userServiceClient.getUserRole(actorId);
-                            } catch (ServiceUnavailableException e) {
-                                throw new ServiceUnavailableException("User service is unavailable");
-                            }}).subscribeOn(Schedulers.boundedElastic())
-                                .map(role -> {
-                                    if (app.getApplicantId().equals(actorId)) {
-                                        return true;
-                                    }
-                                    return "ROLE_ADMIN".equals(role.name()) || "ROLE_MANAGER".equals(role.name());
-                                })
-                                .defaultIfEmpty(false)
-                )
+                .flatMap(app -> Mono.fromCallable(() -> {
+                    if (app.getApplicantId().equals(actorId)) {
+                        return true;
+                    }
+                    return "ROLE_ADMIN".equals(actorRoleClaim) || "ROLE_MANAGER".equals(actorRoleClaim);
+                }).subscribeOn(Schedulers.boundedElastic()))
                 .defaultIfEmpty(false);
     }
 
     public Mono<Long> count() {
         return Mono.fromCallable(applicationRepository::count
         ).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    // helper: safe fetch tags wrapper for earlier code compatibility
+    private Optional<Application> application_repository_findByIdWithTags_safe(UUID applicationId) {
+        try {
+            return applicationRepository.findByIdWithTags(applicationId);
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    private UserRole enumFromRoleString(String roleStr) {
+        if (roleStr == null) return UserRole.ROLE_ADMIN; // fallback
+        try {
+            return UserRole.valueOf(roleStr);
+        } catch (Exception e) {
+            return UserRole.ROLE_ADMIN;
+        }
     }
 }
