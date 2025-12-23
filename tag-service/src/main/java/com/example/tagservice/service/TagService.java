@@ -2,6 +2,7 @@ package com.example.tagservice.service;
 
 import com.example.tagservice.dto.ApplicationInfoDto;
 import com.example.tagservice.dto.TagDto;
+import com.example.tagservice.exception.BadRequestException;
 import com.example.tagservice.exception.NotFoundException;
 import com.example.tagservice.exception.ServiceUnavailableException;
 import com.example.tagservice.feign.ApplicationServiceClient;
@@ -49,20 +50,17 @@ public class TagService {
             return Collections.emptyList();
         }
 
-        // Очистка и уникализация имён
         List<String> uniqueNames = tagNames.stream()
                 .map(String::trim)
                 .filter(name -> !name.isEmpty())
                 .distinct()
                 .collect(Collectors.toList());
 
-        // Поиск существующих тегов
         List<Tag> existingTags = tagRepository.findByNames(uniqueNames);
         Set<String> existingNames = existingTags.stream()
                 .map(Tag::getName)
                 .collect(Collectors.toSet());
 
-        // Создание новых тегов
         List<Tag> newTags = uniqueNames.stream()
                 .filter(name -> !existingNames.contains(name))
                 .map(name -> {
@@ -92,6 +90,9 @@ public class TagService {
 
     @Transactional(readOnly = true)
     public TagDto getTagByName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new BadRequestException("Tag name required");
+        }
         Tag tag = tagRepository.findByName(name)
                 .orElseThrow(() -> new NotFoundException("Tag not found: " + name));
         return toDto(tag);

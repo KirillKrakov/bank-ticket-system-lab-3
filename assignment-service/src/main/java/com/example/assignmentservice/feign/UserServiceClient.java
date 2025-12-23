@@ -12,10 +12,6 @@ import java.util.UUID;
         fallbackFactory = UserServiceClientFallbackFactory.class
 )
 public interface UserServiceClient {
-
     @GetMapping("/api/v1/users/{userId}/exists")
     Boolean userExists(@PathVariable("userId") UUID userId);
-
-    @GetMapping("/api/v1/users/{userId}/role")
-    UserRole getUserRole(@PathVariable("userId") UUID userId);
 }
