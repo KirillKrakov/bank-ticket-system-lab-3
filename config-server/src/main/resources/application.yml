@@ -1,28 +1,22 @@
-spring:
-  config:
-    import: ${SPRING_CONFIG_IMPORT:optional:configserver:http://localhost:8888}
-  application:
-    name: gateway
+server:
+  port: 8888
 
-#server:
-#  port: 8888
-#
-#spring:
-#  application:
-#    name: config-server
-#  cloud:
-#    config:
-#      server:
-#        git:
-#          uri: https://github.com/KirillKrakov/repo_config.git
-#          default-label: main
-#
-#management:
-#  endpoints:
-#    web:
-#      exposure:
-#        include: health,info
-#  endpoint:
-#    health:
-#      enabled: true
-#      show-details: always
+spring:
+  application:
+    name: config-server
+  cloud:
+    config:
+      server:
+        git:
+          uri: https://github.com/KirillKrakov/repo_config.git
+          default-label: main
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      enabled: true
+      show-details: always
