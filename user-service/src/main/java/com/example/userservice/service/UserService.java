@@ -7,9 +7,9 @@ import com.example.userservice.feign.ApplicationServiceClient;
 import com.example.userservice.model.entity.User;
 import com.example.userservice.model.enums.UserRole;
 import com.example.userservice.repository.UserRepository;
-import com.password4j.Password;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -168,28 +168,49 @@ public class UserService {
      * Validates that current authenticated actor exists and has ROLE_ADMIN.
      * The principal is expected to be the user's UUID string (set by JwtAuthWebFilter).
      */
+//    public Mono<User> validateAdmin() {
+//        return ReactiveSecurityContextHolder.getContext()
+//                .switchIfEmpty(Mono.error(new UnauthorizedException("Unauthorized")))
+//                .flatMap(ctx -> {
+//                    if (ctx.getAuthentication() == null || ctx.getAuthentication().getPrincipal() == null) {
+//                        return Mono.error(new UnauthorizedException("Unauthorized"));
+//                    }
+//                    String principal = ctx.getAuthentication().getPrincipal().toString();
+//                    UUID actorId;
+//                    try {
+//                        actorId = UUID.fromString(principal);
+//                    } catch (IllegalArgumentException ex) {
+//                        return Mono.error(new UnauthorizedException("Invalid principal"));
+//                    }
+//
+//                    return userRepository.findById(actorId)
+//                            .switchIfEmpty(Mono.error(new NotFoundException("Actor not found: " + actorId)))
+//                            .flatMap(actor -> {
+//                                if (actor.getRole() != UserRole.ROLE_ADMIN) {
+//                                    return Mono.error(new ForbiddenException("Only ADMIN can perform this action"));
+//                                }
+//                                return Mono.just(actor);
+//                            });
+//                });
+//    }
     public Mono<User> validateAdmin() {
         return ReactiveSecurityContextHolder.getContext()
                 .switchIfEmpty(Mono.error(new UnauthorizedException("Unauthorized")))
                 .flatMap(ctx -> {
-                    if (ctx.getAuthentication() == null || ctx.getAuthentication().getPrincipal() == null) {
+                    Authentication auth = ctx.getAuthentication();
+                    if (auth == null || auth.getName() == null) {
                         return Mono.error(new UnauthorizedException("Unauthorized"));
                     }
-                    String principal = ctx.getAuthentication().getPrincipal().toString();
-                    UUID actorId;
-                    try {
-                        actorId = UUID.fromString(principal);
-                    } catch (IllegalArgumentException ex) {
-                        return Mono.error(new UnauthorizedException("Invalid principal"));
-                    }
 
-                    return userRepository.findById(actorId)
-                            .switchIfEmpty(Mono.error(new NotFoundException("Actor not found: " + actorId)))
-                            .flatMap(actor -> {
-                                if (actor.getRole() != UserRole.ROLE_ADMIN) {
+                    String username = auth.getName(); // Получаем username из principal
+
+                    return userRepository.findByUsername(username)
+                            .switchIfEmpty(Mono.error(new NotFoundException("User not found: " + username)))
+                            .flatMap(user -> {
+                                if (user.getRole() != UserRole.ROLE_ADMIN) {
                                     return Mono.error(new ForbiddenException("Only ADMIN can perform this action"));
                                 }
-                                return Mono.just(actor);
+                                return Mono.just(user);
                             });
                 });
     }
