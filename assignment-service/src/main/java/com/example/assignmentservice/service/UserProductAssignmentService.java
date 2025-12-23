@@ -9,16 +9,12 @@ import com.example.assignmentservice.model.enums.AssignmentRole;
 import com.example.assignmentservice.model.enums.UserRole;
 import com.example.assignmentservice.repository.UserProductAssignmentRepository;
 import feign.FeignException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -30,7 +26,6 @@ public class UserProductAssignmentService {
     private final UserServiceClient userServiceClient;
     private final ProductServiceClient productServiceClient;
 
-    @Autowired
     public UserProductAssignmentService(
             UserProductAssignmentRepository repo,
             UserServiceClient userServiceClient,
@@ -41,11 +36,7 @@ public class UserProductAssignmentService {
     }
 
     @Transactional
-    public UserProductAssignment assign(UUID actorId, UUID userId, UUID productId, AssignmentRole role) {
-        logger.info("Creating assignment: user={}, product={}, role={}, actor={}",
-                userId, productId, role, actorId);
-
-        checkActorRights(actorId, productId);
+    public UserProductAssignment assign(UUID userId, UUID productId, AssignmentRole role) {
 
         checkUserAndProductExist(userId, productId);
 
@@ -87,15 +78,7 @@ public class UserProductAssignmentService {
     }
 
     @Transactional
-    public void deleteAssignments(UUID actorId, UUID userId, UUID productId) {
-        logger.info("Deleting assignments: actor={}, user={}, product={}",
-                actorId, userId, productId);
-
-        if (actorId == null) {
-            throw new UnauthorizedException("Actor ID is required");
-        }
-
-        checkAdminRights(actorId);
+    public void deleteAssignments(UUID userId, UUID productId) {
 
         if (userId != null && productId != null) {
             checkUserAndProductExist(userId, productId);
@@ -133,37 +116,7 @@ public class UserProductAssignmentService {
         repo.deleteByUserId(userId);
     }
 
-    // Вспомогательные методы
-    private void checkActorRights(UUID actorId, UUID productId) {
-        try {
-            UserRole actorRole = userServiceClient.getUserRole(actorId);
-            boolean isAdmin = actorRole == UserRole.ROLE_ADMIN;
-            boolean isOwner = repo.existsByUserIdAndProductIdAndRoleOnProduct(
-                    actorId, productId, AssignmentRole.PRODUCT_OWNER);
-            if (!isAdmin && !isOwner) {
-                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can assign products");
-            }
-        } catch (FeignException.NotFound e) {
-            throw new NotFoundException("Actor not found: " + actorId);
-        } catch (FeignException | ServiceUnavailableException e) {
-            logger.error("Error checking actor rights: {}", e.getMessage());
-            throw new ServiceUnavailableException("Cannot verify user rights. User service is unavailable now");
-        }
-    }
-
-    private void checkAdminRights(UUID actorId) {
-        try {
-            UserRole actorRole = userServiceClient.getUserRole(actorId);
-            if (actorRole != UserRole.ROLE_ADMIN) {
-                throw new ForbiddenException("Only ADMIN can delete assignments");
-            }
-        } catch (FeignException.NotFound e) {
-            throw new NotFoundException("Actor not found: " + actorId);
-        } catch (FeignException | ServiceUnavailableException e) {
-            logger.error("Error checking admin rights: {}", e.getMessage());
-            throw new ServiceUnavailableException("Cannot verify admin rights. User service is unavailable now");
-        }
-    }
+    // Helper methods
 
     private void checkUserAndProductExist(UUID userId, UUID productId) {
         checkUserExists(userId);
@@ -173,9 +126,14 @@ public class UserProductAssignmentService {
     private void checkUserExists(UUID userId) {
         try {
             Boolean exists = userServiceClient.userExists(userId);
+            if (exists == null) {
+                throw new ServiceUnavailableException("Cannot verify user. User service unavailable now");
+            }
             if (!exists) {
                 throw new NotFoundException("User not found: " + userId);
             }
+        } catch (FeignException.NotFound e) {
+            throw new NotFoundException("User not found: " + userId);
         } catch (FeignException | ServiceUnavailableException e) {
             logger.error("Error checking user existence: {}", e.getMessage());
             throw new ServiceUnavailableException("Cannot verify user. User service unavailable now");
@@ -185,12 +143,17 @@ public class UserProductAssignmentService {
     private void checkProductExists(UUID productId) {
         try {
             Boolean exists = productServiceClient.productExists(productId);
+            if (exists == null) {
+                throw new ServiceUnavailableException("Cannot verify product. Product service unavailable now");
+            }
             if (!exists) {
                 throw new NotFoundException("Product not found: " + productId);
             }
+        } catch (FeignException.NotFound e) {
+            throw new NotFoundException("Product not found: " + productId);
         } catch (FeignException | ServiceUnavailableException e) {
             logger.error("Error checking product existence: {}", e.getMessage());
-            throw new ServiceUnavailableException("Cannot verify product. Product service unavailable now");
+            throw new ServiceUnavailableException("Cannot verify product. Product service is unavailable now");
         }
     }
 

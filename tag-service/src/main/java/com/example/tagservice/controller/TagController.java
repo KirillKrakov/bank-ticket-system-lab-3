@@ -1,8 +1,6 @@
 package com.example.tagservice.controller;
 
-import com.example.tagservice.dto.ApplicationInfoDto;
 import com.example.tagservice.dto.TagDto;
-import com.example.tagservice.feign.ApplicationServiceClient;
 import com.example.tagservice.service.TagService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -44,7 +42,6 @@ public class TagController {
     public ResponseEntity<TagDto> createTag(
             @Valid @RequestBody String name,
             UriComponentsBuilder uriBuilder) {
-
         name = name.trim();
         var tag = tagService.createIfNotExists(name);
 

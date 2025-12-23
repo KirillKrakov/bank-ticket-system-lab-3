@@ -9,6 +9,7 @@ import com.example.applicationservice.model.enums.UserRole;
 import com.example.applicationservice.repository.*;
 import com.example.applicationservice.util.ApplicationPage;
 import com.example.applicationservice.util.CursorUtil;
+import feign.FeignException;
 import org.slf4j.*;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -77,11 +78,10 @@ public class ApplicationService {
         // Verify applicant exists (call user-service) - Feign interceptor will forward Authorization header
         return Mono.fromCallable(() -> {
                     try {
-                        Boolean exists = userServiceClient.userExists(applicantId);
-                        return exists;
+                        return userServiceClient.userExists(applicantId);
+                    } catch (FeignException.NotFound | NotFoundException ex) {
+                        throw new NotFoundException("Applicant with this ID not found");
                     } catch (Exception ex) {
-                        log.warn("ошибка при запросе к user-service");
-                        log.warn(ex.getMessage());
                         throw new ServiceUnavailableException("User service is unavailable now");
                     }
                 }).subscribeOn(Schedulers.boundedElastic())
@@ -95,8 +95,9 @@ public class ApplicationService {
                     // verify product exists
                     return Mono.fromCallable(() -> {
                         try {
-                            Boolean pExists = productServiceClient.productExists(productId);
-                            return pExists;
+                            return productServiceClient.productExists(productId);
+                        } catch (FeignException.NotFound | NotFoundException ex) {
+                            throw new NotFoundException("Product with this ID not found");
                         } catch (Exception ex) {
                             throw new ServiceUnavailableException("Product service is unavailable now");
                         }

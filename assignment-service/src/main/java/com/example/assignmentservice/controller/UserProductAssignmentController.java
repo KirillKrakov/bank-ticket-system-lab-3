@@ -5,12 +5,14 @@ import com.example.assignmentservice.dto.UserProductAssignmentRequest;
 import com.example.assignmentservice.model.enums.AssignmentRole;
 import com.example.assignmentservice.service.UserProductAssignmentService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.responses.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.*;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -23,9 +25,9 @@ import java.util.UUID;
 @RequestMapping("/api/v1/assignments")
 public class UserProductAssignmentController {
 
+    private static final Logger logger = LoggerFactory.getLogger(UserProductAssignmentController.class);
     private final UserProductAssignmentService service;
 
-    @Autowired
     public UserProductAssignmentController(UserProductAssignmentService service) {
         this.service = service;
     }
@@ -34,17 +36,22 @@ public class UserProductAssignmentController {
             description = "Registers a new assignment between user and product")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "201", description = "Assignment created successfully"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized"),
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "User, product or actor not found"),
             @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
     })
     @PostMapping
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<UserProductAssignmentDto> assign(
             @Valid @RequestBody UserProductAssignmentRequest req,
-            @RequestParam("actorId") UUID actorId,
+            @AuthenticationPrincipal Jwt jwt,
             UriComponentsBuilder uriBuilder) {
 
-        var assignment = service.assign(actorId, req.getUserId(), req.getProductId(), req.getRole());
+        if (jwt == null) {
+            return ResponseEntity.status(401).build();
+        }
+        var assignment = service.assign(req.getUserId(), req.getProductId(), req.getRole());
         UserProductAssignmentDto dto = service.toDto(assignment);
 
         URI location = uriBuilder.path("/api/v1/assignments/{id}")
@@ -72,6 +79,7 @@ public class UserProductAssignmentController {
             description = "Checks if a specific assignment exists")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "200", description = "Assignment exists or not"),
+            @ApiResponse(responseCode = "400", description = "Bad request")
     })
     @GetMapping("/exists")
     public ResponseEntity<Boolean> exists(
@@ -94,18 +102,22 @@ public class UserProductAssignmentController {
             description = "Deletes assignments based on criteria")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "204", description = "Assignments deleted successfully"),
-            @ApiResponse(responseCode = "401", description = "Actor is unauthorized"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized"),
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "User or product not found"),
             @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
     })
     @DeleteMapping
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<Void> deleteAssignments(
-            @RequestParam UUID actorId,
+            @AuthenticationPrincipal Jwt jwt,
             @RequestParam(required = false) UUID userId,
             @RequestParam(required = false) UUID productId) {
 
-        service.deleteAssignments(actorId, userId, productId);
+        if (jwt == null) {
+            return ResponseEntity.status(401).build();
+        }
+        service.deleteAssignments(userId, productId);
         return ResponseEntity.noContent().build();
     }
 }
