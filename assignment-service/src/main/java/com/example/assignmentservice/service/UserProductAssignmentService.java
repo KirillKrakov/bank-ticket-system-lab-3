@@ -36,7 +36,11 @@ public class UserProductAssignmentService {
     }
 
     @Transactional
-    public UserProductAssignment assign(UUID userId, UUID productId, AssignmentRole role) {
+    public UserProductAssignment assign(UUID actorId, String actorRoleClaim, UUID userId, UUID productId, AssignmentRole role) {
+        logger.info("Creating assignment: user={}, product={}, role={}, actor={} (actorRole={})",
+                userId, productId, role, actorId, actorRoleClaim);
+
+        checkActorRights(actorId, actorRoleClaim, productId);
 
         checkUserAndProductExist(userId, productId);
 
@@ -78,7 +82,15 @@ public class UserProductAssignmentService {
     }
 
     @Transactional
-    public void deleteAssignments(UUID userId, UUID productId) {
+    public void deleteAssignments(UUID actorId, String actorRoleClaim, UUID userId, UUID productId) {
+        logger.info("Deleting assignments: actor={}, actorRole={}, user={}, product={}",
+                actorId, actorRoleClaim, userId, productId);
+
+        if (actorId == null) {
+            throw new UnauthorizedException("Actor ID is required");
+        }
+
+        checkAdminRights(actorId, actorRoleClaim);
 
         if (userId != null && productId != null) {
             checkUserAndProductExist(userId, productId);
@@ -118,6 +130,48 @@ public class UserProductAssignmentService {
 
     // Helper methods
 
+    /**
+     * Check actor rights using actorRoleClaim if provided; fallback to userServiceClient if necessary.
+     * Allowed: ROLE_ADMIN OR PRODUCT_OWNER assignment for the actor on product.
+     */
+    private void checkActorRights(UUID actorId, String actorRoleClaim, UUID productId) {
+        try {
+            boolean isAdmin = false;
+            if (actorRoleClaim != null) {
+                isAdmin = "ROLE_ADMIN".equals(actorRoleClaim);
+            }
+
+            boolean isOwner = repo.existsByUserIdAndProductIdAndRoleOnProduct(
+                    actorId, productId, AssignmentRole.PRODUCT_OWNER);
+
+            if (!isAdmin && !isOwner) {
+                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can assign products");
+            }
+        } catch (FeignException.NotFound e) {
+            throw new NotFoundException("Actor not found: " + actorId);
+        } catch (FeignException | ServiceUnavailableException e) {
+            logger.error("Error checking actor rights: {}", e.getMessage());
+            throw new ServiceUnavailableException("Cannot verify user rights. User service is unavailable now");
+        }
+    }
+
+    private void checkAdminRights(UUID actorId, String actorRoleClaim) {
+        try {
+            boolean isAdmin = false;
+            if (actorRoleClaim != null) {
+                isAdmin = "ROLE_ADMIN".equals(actorRoleClaim);
+            }
+            if (!isAdmin) {
+                throw new ForbiddenException("Only ADMIN can delete assignments");
+            }
+        } catch (FeignException.NotFound e) {
+            throw new NotFoundException("Actor not found: " + actorId);
+        } catch (FeignException | ServiceUnavailableException e) {
+            logger.error("Error checking admin rights: {}", e.getMessage());
+            throw new ServiceUnavailableException("Cannot verify admin rights. User service is unavailable now");
+        }
+    }
+
     private void checkUserAndProductExist(UUID userId, UUID productId) {
         checkUserExists(userId);
         checkProductExists(productId);
@@ -127,16 +181,17 @@ public class UserProductAssignmentService {
         try {
             Boolean exists = userServiceClient.userExists(userId);
             if (exists == null) {
+                logger.warn("Поймал null");
                 throw new ServiceUnavailableException("Cannot verify user. User service unavailable now");
             }
             if (!exists) {
+                logger.warn("Поймал !exists");
                 throw new NotFoundException("User not found: " + userId);
             }
-        } catch (FeignException.NotFound e) {
-            throw new NotFoundException("User not found: " + userId);
-        } catch (FeignException | ServiceUnavailableException e) {
+        } catch (FeignException e) {
+            logger.warn("Поймал только FeignException: {}", e.status());
             logger.error("Error checking user existence: {}", e.getMessage());
-            throw new ServiceUnavailableException("Cannot verify user. User service unavailable now");
+            throw new ServiceUnavailableException("Cannot verify user. User service is unavailable now");
         }
     }
 
@@ -149,9 +204,7 @@ public class UserProductAssignmentService {
             if (!exists) {
                 throw new NotFoundException("Product not found: " + productId);
             }
-        } catch (FeignException.NotFound e) {
-            throw new NotFoundException("Product not found: " + productId);
-        } catch (FeignException | ServiceUnavailableException e) {
+        } catch (FeignException e) {
             logger.error("Error checking product existence: {}", e.getMessage());
             throw new ServiceUnavailableException("Cannot verify product. Product service is unavailable now");
         }

@@ -10,7 +10,6 @@ import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
-import java.util.UUID;
 
 @Service
 public class JwtService {
@@ -18,8 +17,8 @@ public class JwtService {
     private final SecretKey key;
     private final long expirationMillis;
 
-    public JwtService(@Value("${jwt.secret:very_long_random_secret_at_least_32_chars_for_local_testing_change_me}") String secret,
-                      @Value("${jwt.expiration-ms:3600000}") long expirationMillis) {
+    public JwtService(@Value("${jwt.secret}") String secret,
+                      @Value("${jwt.expiration-ms}") long expirationMillis) {
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         this.key = Keys.hmacShaKeyFor(bytes);
         this.expirationMillis = expirationMillis;

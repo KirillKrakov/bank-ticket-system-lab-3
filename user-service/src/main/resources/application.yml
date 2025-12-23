@@ -3,7 +3,3 @@ spring:
     import: ${SPRING_CONFIG_IMPORT:optional:configserver:http://localhost:8888}
   application:
     name: user-service
-
-jwt:
-  secret: "very_long_random_secret_at_least_32_chars_for_local_testing_change_me"
-  expiration-ms: 3600000
