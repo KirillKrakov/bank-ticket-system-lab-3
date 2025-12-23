@@ -5,10 +5,8 @@ import com.example.productservice.dto.ProductRequest;
 import com.example.productservice.exception.*;
 import com.example.productservice.feign.ApplicationServiceClient;
 import com.example.productservice.feign.AssignmentServiceClient;
-import com.example.productservice.feign.UserServiceClient;
 import com.example.productservice.model.entity.Product;
 import com.example.productservice.model.enums.AssignmentRole;
-import com.example.productservice.model.enums.UserRole;
 import com.example.productservice.repository.ProductRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +16,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -28,18 +27,15 @@ public class ProductService {
     private static final Logger logger = LoggerFactory.getLogger(ProductService.class);
 
     private final ProductRepository productRepository;
-    private final UserServiceClient userServiceClient;
     private final ApplicationServiceClient applicationServiceClient;
     private final AssignmentServiceClient assignmentServiceClient;
 
     @Autowired
     public ProductService(
             ProductRepository productRepository,
-            UserServiceClient userServiceClient,
             ApplicationServiceClient applicationServiceClient,
             AssignmentServiceClient assignmentServiceClient) {
         this.productRepository = productRepository;
-        this.userServiceClient = userServiceClient;
         this.applicationServiceClient = applicationServiceClient;
         this.assignmentServiceClient = assignmentServiceClient;
     }
@@ -98,33 +94,22 @@ public class ProductService {
     }
 
     @Transactional
-    public ProductDto updateProduct(UUID productId, ProductRequest req, UUID actorId) {
+    public ProductDto updateProduct(UUID productId, ProductRequest req, UUID actorId, Jwt jwt) {
         if (req == null) {
             throw new BadRequestException("Request is required");
         }
-
         if (actorId == null) {
-            throw new UnauthorizedException("You must specify the actorId to authorize in this request");
+            throw new UnauthorizedException("You must be authenticated to perform this action");
         }
-
-        if (userServiceClient.userExists((actorId)) == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-
-        // Проверяем существование пользователя через Feign
-        if (!userServiceClient.userExists(actorId)) {
-            throw new NotFoundException("Actor not found: " + actorId);
-        }
-
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
-
-        // Проверяем права через Feign
-        UserRole actorRole = userServiceClient.getUserRole(actorId);
-        if (actorRole == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
+        boolean isAdmin = false;
+        if (jwt != null) {
+            Object roleClaim = jwt.getClaims().get("role");
+            if (roleClaim != null && ("ROLE_ADMIN".equals(roleClaim.toString()))) {
+                isAdmin = true;
+            }
         }
-        boolean isAdmin = actorRole == UserRole.ROLE_ADMIN;
 
         Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
                 actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
@@ -156,29 +141,21 @@ public class ProductService {
     }
 
     @Transactional
-    public void deleteProduct(UUID productId, UUID actorId) {
+    public void deleteProduct(UUID productId, UUID actorId, Jwt jwt) {
         if (actorId == null) {
-            throw new UnauthorizedException("You must specify the actorId to authorize in this request");
-        }
-
-        // Проверяем существование пользователя через Feign
-        if (userServiceClient.userExists((actorId)) == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-
-        if (!userServiceClient.userExists(actorId)) {
-            throw new NotFoundException("Actor not found: " + actorId);
+            throw new UnauthorizedException("You must be authenticated to perform this action");
         }
 
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
 
-        // Проверяем права через Feign
-        UserRole actorRole = userServiceClient.getUserRole(actorId);
-        if (actorRole == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
+        boolean isAdmin = false;
+        if (jwt != null) {
+            Object roleClaim = jwt.getClaims().get("role");
+            if (roleClaim != null && ("ROLE_ADMIN".equals(roleClaim.toString()))) {
+                isAdmin = true;
+            }
         }
-        boolean isAdmin = actorRole == UserRole.ROLE_ADMIN;
 
         Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
                 actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
@@ -192,14 +169,9 @@ public class ProductService {
         }
 
         try {
-            // Удаляем связанные заявки через Feign
             applicationServiceClient.deleteApplicationsByProductId(productId);
-            logger.info("Applications deleted for product: {}", productId);
-
-            // Удаляем сам продукт
             productRepository.delete(product);
             logger.info("Product deleted: {}", productId);
-
         } catch (ServiceUnavailableException ex) {
             logger.error("Application service is unavailable now");
             throw new ServiceUnavailableException("Application service is unavailable now");

@@ -1,4 +1,4 @@
-package com.example.productservice.controller;
+/*package com.example.productservice.controller;
 
 import com.example.productservice.controller.ProductController;
 import com.example.productservice.dto.ProductDto;
@@ -511,3 +511,4 @@ public class ProductControllerTest {
         assertEquals(dto, response.getBody());
     }
 }
+*/

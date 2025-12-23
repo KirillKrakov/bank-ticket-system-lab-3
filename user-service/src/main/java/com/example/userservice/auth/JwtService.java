@@ -50,19 +50,23 @@ public class JwtService {
     }
 
     public String extractUsername(String token) {
-        Claims c = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+        Claims c = parseClaims(token);
         return c.getSubject();
     }
 
     public String extractUserId(String token) {
-        Claims c = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+        Claims c = parseClaims(token);
         Object uid = c.get("uid");
         return uid != null ? uid.toString() : null;
     }
 
     public String extractRole(String token) {
-        Claims c = Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
+        Claims c = parseClaims(token);
         Object role = c.get("role");
         return role != null ? role.toString() : null;
+    }
+
+    private Claims parseClaims(String token) {
+        return Jwts.parserBuilder().setSigningKey(key).build().parseClaimsJws(token).getBody();
     }
 }
