@@ -10,12 +10,11 @@ import com.example.productservice.model.entity.Product;
 import com.example.productservice.model.enums.AssignmentRole;
 import com.example.productservice.model.enums.UserRole;
 import com.example.productservice.repository.ProductRepository;
+import com.example.productservice.auth.AuthUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,7 +27,7 @@ public class ProductService {
     private static final Logger logger = LoggerFactory.getLogger(ProductService.class);
 
     private final ProductRepository productRepository;
-    private final UserServiceClient userServiceClient;
+    private final UserServiceClient userServiceClient; // left for other usages (not used for role checks anymore)
     private final ApplicationServiceClient applicationServiceClient;
     private final AssignmentServiceClient assignmentServiceClient;
 
@@ -97,44 +96,34 @@ public class ProductService {
                 .orElse(null);
     }
 
+    /**
+     * Update product. Authorization: only ROLE_ADMIN or PRODUCT_OWNER may update.
+     * Actor info is derived from JWT (AuthUtils.currentUserId and currentRoles).
+     */
     @Transactional
-    public ProductDto updateProduct(UUID productId, ProductRequest req, UUID actorId) {
+    public ProductDto updateProduct(UUID productId, ProductRequest req) {
         if (req == null) {
             throw new BadRequestException("Request is required");
         }
 
-        if (actorId == null) {
-            throw new UnauthorizedException("You must specify the actorId to authorize in this request");
-        }
+        UUID actorId = AuthUtils.currentUserId().orElseThrow(() -> new UnauthorizedException("Unauthorized"));
+        boolean isAdmin = AuthUtils.hasRole("ROLE_ADMIN");
 
-        if (userServiceClient.userExists((actorId)) == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-
-        // Проверяем существование пользователя через Feign
-        if (!userServiceClient.userExists(actorId)) {
-            throw new NotFoundException("Actor not found: " + actorId);
-        }
-
+        // Check existence of product
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
 
-        // Проверяем права через Feign
-        UserRole actorRole = userServiceClient.getUserRole(actorId);
-        if (actorRole == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-        boolean isAdmin = actorRole == UserRole.ROLE_ADMIN;
-
-        Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
-        );
-        if (isOwner == null) {
-            throw new ServiceUnavailableException("Assignment service is unavailable now");
-        }
-
-        if (!isAdmin && !isOwner) {
-            throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can update product");
+        // Check ownership via assignment service if not admin
+        if (!isAdmin) {
+            Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
+                    actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
+            );
+            if (isOwner == null) {
+                throw new ServiceUnavailableException("Assignment service is unavailable now");
+            }
+            if (!isOwner) {
+                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can update product");
+            }
         }
 
         if (req.getName() != null && !req.getName().trim().isEmpty()) {
@@ -156,53 +145,34 @@ public class ProductService {
     }
 
     @Transactional
-    public void deleteProduct(UUID productId, UUID actorId) {
-        if (actorId == null) {
-            throw new UnauthorizedException("You must specify the actorId to authorize in this request");
-        }
-
-        // Проверяем существование пользователя через Feign
-        if (userServiceClient.userExists((actorId)) == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-
-        if (!userServiceClient.userExists(actorId)) {
-            throw new NotFoundException("Actor not found: " + actorId);
-        }
+    public void deleteProduct(UUID productId) {
+        UUID actorId = AuthUtils.currentUserId().orElseThrow(() -> new UnauthorizedException("Unauthorized"));
+        boolean isAdmin = AuthUtils.hasRole("ROLE_ADMIN");
 
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
 
-        // Проверяем права через Feign
-        UserRole actorRole = userServiceClient.getUserRole(actorId);
-        if (actorRole == null) {
-            throw new ServiceUnavailableException("User service is unavailable now");
-        }
-        boolean isAdmin = actorRole == UserRole.ROLE_ADMIN;
-
-        Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
-        );
-        if (isOwner == null) {
-            throw new ServiceUnavailableException("Assignment service is unavailable now");
-        }
-
-        if (!isAdmin && !isOwner) {
-            throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can delete product");
+        if (!isAdmin) {
+            Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
+                    actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
+            );
+            if (isOwner == null) {
+                throw new ServiceUnavailableException("Assignment service is unavailable now");
+            }
+            if (!isOwner) {
+                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can delete product");
+            }
         }
 
         try {
-            // Удаляем связанные заявки через Feign
+            // Delete dependent applications via application service (propagated Authorization header)
             applicationServiceClient.deleteApplicationsByProductId(productId);
             logger.info("Applications deleted for product: {}", productId);
 
-            // Удаляем сам продукт
+            // Delete product itself
             productRepository.delete(product);
             logger.info("Product deleted: {}", productId);
 
-        } catch (ServiceUnavailableException ex) {
-            logger.error("Application service is unavailable now");
-            throw new ServiceUnavailableException("Application service is unavailable now");
         } catch (Exception ex) {
             logger.error("Failed to delete product and its applications: {}", ex.getMessage(), ex);
             throw new ConflictException("Failed to delete product and its applications: " + ex.getMessage());

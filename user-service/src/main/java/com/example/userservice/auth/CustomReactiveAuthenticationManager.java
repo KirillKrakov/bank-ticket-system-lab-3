@@ -1,5 +1,6 @@
 package com.example.userservice.auth;
 
+import org.springframework.context.annotation.Bean;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.authentication.ReactiveAuthenticationManager;
 import org.springframework.security.core.Authentication;
@@ -16,6 +17,11 @@ public class CustomReactiveAuthenticationManager implements ReactiveAuthenticati
     public CustomReactiveAuthenticationManager(ReactiveUserDetailsService uds, PasswordEncoder passwordEncoder) {
         this.userDetailsService = uds;
         this.passwordEncoder = passwordEncoder;
+    }
+
+    @Bean
+    public ReactiveAuthenticationManager reactiveAuthenticationManager(ReactiveUserDetailsService uds, PasswordEncoder passwordEncoder) {
+        return new CustomReactiveAuthenticationManager(uds, passwordEncoder);
     }
 
     @Override

@@ -1,6 +1,7 @@
 package com.example.userservice.auth;
 
 import com.example.userservice.repository.UserRepository;
+import org.springframework.context.annotation.Bean;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.ReactiveUserDetailsService;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -14,6 +15,11 @@ public class RepoReactiveUserDetailsService implements ReactiveUserDetailsServic
 
     public RepoReactiveUserDetailsService(UserRepository userRepository) {
         this.userRepository = userRepository;
+    }
+
+    @Bean
+    public ReactiveUserDetailsService reactiveUserDetailsService(UserRepository userRepository) {
+        return new RepoReactiveUserDetailsService(userRepository);
     }
 
     @Override

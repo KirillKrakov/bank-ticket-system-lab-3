@@ -41,7 +41,8 @@ public class ProductController {
     @ApiResponses(value = {
             @ApiResponse(responseCode = "201", description = "Product created successfully"),
             @ApiResponse(responseCode = "400", description = "Invalid request body"),
-            @ApiResponse(responseCode = "409", description = "Product name already in use")
+            @ApiResponse(responseCode = "409", description = "Product name already in use"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized")
     })
     @PostMapping
     public ResponseEntity<ProductDto> create(@Valid @RequestBody ProductRequest req, UriComponentsBuilder uriBuilder) {
@@ -96,16 +97,15 @@ public class ProductController {
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "Product or actor not found"),
             @ApiResponse(responseCode = "409", description = "Product name already in use"),
-            @ApiResponse(responseCode = "503", description = "User service is unavailable")
+            @ApiResponse(responseCode = "503", description = "Dependent service is unavailable")
     })
     @PutMapping("/{id}")
     public ResponseEntity<ProductDto> updateProduct(
             @PathVariable("id") UUID id,
-            @Valid @RequestBody ProductRequest req,
-            @RequestParam("actorId") UUID actorId) {
+            @Valid @RequestBody ProductRequest req) {
 
-        logger.info("Updating product {} by actor {}", id, actorId);
-        ProductDto dto = productService.updateProduct(id, req, actorId);
+        logger.info("Updating product {}", id);
+        ProductDto dto = productService.updateProduct(id, req);
         return ResponseEntity.ok(dto);
     }
 
@@ -116,19 +116,18 @@ public class ProductController {
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "Product or actor not found"),
             @ApiResponse(responseCode = "409", description = "Error during deletion"),
-            @ApiResponse(responseCode = "503", description = "User or application service is unavailable")
+            @ApiResponse(responseCode = "503", description = "Dependent service is unavailable")
     })
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteProduct(
-            @PathVariable("id") UUID id,
-            @RequestParam("actorId") UUID actorId) {
+            @PathVariable("id") UUID id) {
 
-        logger.info("Deleting product {} by actor {}", id, actorId);
-        productService.deleteProduct(id, actorId);
+        logger.info("Deleting product {}", id);
+        productService.deleteProduct(id);
         return ResponseEntity.noContent().build();
     }
 
-    // Internal endpoints для других сервисов
+    // Internal endpoints for other services
     @GetMapping("/{id}/exists")
     public ResponseEntity<Boolean> productExists(@PathVariable UUID id) {
         boolean exists = productService.existsById(id);

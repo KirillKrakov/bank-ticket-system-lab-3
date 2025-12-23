@@ -35,7 +35,6 @@ public class OpenApiConfig {
                                         .bearerFormat("JWT")
                         )
                 )
-                // Global security requirement: добавляет замок ко всем операциям в UI.
                 .addSecurityItem(new SecurityRequirement().addList(SECURITY_SCHEME_NAME));
     }
 }

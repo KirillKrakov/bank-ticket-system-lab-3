@@ -1,6 +1,5 @@
-package com.example.userservice.auth;
+package com.example.productservice.auth;
 
-import com.example.userservice.model.entity.User;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,8 +8,8 @@ import org.springframework.stereotype.Service;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Date;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class JwtService {
@@ -18,26 +17,13 @@ public class JwtService {
     private final SecretKey key;
     private final long expirationMillis;
 
-    public JwtService(@Value("${jwt.secret:very_long_random_secret_at_least_32_chars_for_local_testing_change_me}") String secret,
-                      @Value("${jwt.expiration-ms:3600000}") long expirationMillis) {
+    public JwtService(
+            @Value("${jwt.secret:very_long_random_secret_at_least_32_chars_for_local_testing_change_me}") String secret,
+            @Value("${jwt.expiration-ms:3600000}") long expirationMillis) {
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
-        this.key = Keys.hmacShaKeyFor(bytes);
+        // Ensure minimum length
+        this.key = Keys.hmacShaKeyFor(Arrays.copyOf(bytes, Math.max(bytes.length, 32)));
         this.expirationMillis = expirationMillis;
-    }
-
-    public String generateToken(User user) {
-        Instant now = Instant.now();
-        Date iat = Date.from(now);
-        Date exp = Date.from(now.plusMillis(expirationMillis));
-
-        return Jwts.builder()
-                .setSubject(user.getUsername())
-                .claim("uid", user.getId().toString())
-                .claim("role", user.getRole().name())
-                .setIssuedAt(iat)
-                .setExpiration(exp)
-                .signWith(key, SignatureAlgorithm.HS256)
-                .compact();
     }
 
     public boolean validateToken(String token) {
