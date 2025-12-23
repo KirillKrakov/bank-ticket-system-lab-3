@@ -4,6 +4,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.bind.support.WebExchangeBindException;
 import java.time.Instant;
@@ -21,12 +23,12 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(UnauthorizedException.class)
-    public Mono<ResponseEntity<Object>> handleConflict(UnauthorizedException ex) {
+    public Mono<ResponseEntity<Object>> handleUnauthorized(UnauthorizedException ex) {
         return buildError(HttpStatus.UNAUTHORIZED, ex.getMessage(), null);
     }
 
     @ExceptionHandler(ForbiddenException.class)
-    public Mono<ResponseEntity<Object>> handleConflict(ForbiddenException ex) {
+    public Mono<ResponseEntity<Object>> handleForbidden(ForbiddenException ex) {
         return buildError(HttpStatus.FORBIDDEN, ex.getMessage(), null);
     }
 
@@ -48,6 +50,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public Mono<ResponseEntity<Object>> handleConstraint(DataIntegrityViolationException ex) {
         return buildError(HttpStatus.CONFLICT, "Database constraint violation", null);
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public Mono<ResponseEntity<Object>> handleUnauthorized(AuthenticationException ex) {
+        return buildError(HttpStatus.UNAUTHORIZED, ex.getMessage(), null);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public Mono<ResponseEntity<Object>> handleForbidden(AccessDeniedException ex) {
+        return buildError(HttpStatus.FORBIDDEN, ex.getMessage(), null);
     }
 
     @ExceptionHandler(WebExchangeBindException.class)

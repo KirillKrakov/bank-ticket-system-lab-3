@@ -35,7 +35,6 @@ public class JwtAuthWebFilter implements WebFilter {
                     String uid = jwtService.extractUserId(token);
                     String role = jwtService.extractRole(token);
                     if (uid != null && role != null) {
-                        // Use user id string as principal (we will parse it where needed)
                         GrantedAuthority authority = new SimpleGrantedAuthority(role);
                         Authentication auth = new UsernamePasswordAuthenticationToken(uid, null, List.of(authority));
                         SecurityContextImpl context = new SecurityContextImpl(auth);
@@ -45,7 +44,6 @@ public class JwtAuthWebFilter implements WebFilter {
                 }
             } catch (Exception ex) {
                 log.debug("JWT validation failed: {}", ex.getMessage());
-                // fallthrough -> continue without security context (will be rejected later by security)
             }
         }
         return chain.filter(exchange);

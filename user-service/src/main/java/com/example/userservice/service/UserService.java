@@ -11,6 +11,7 @@ import com.password4j.Password;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
@@ -27,11 +28,13 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final ApplicationServiceClient applicationServiceClient;
+    private final PasswordEncoder passwordEncoder;
 
     public UserService(UserRepository userRepository,
-                       ApplicationServiceClient applicationServiceClient) {
+                       ApplicationServiceClient applicationServiceClient, PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.applicationServiceClient = applicationServiceClient;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Transactional
@@ -64,7 +67,7 @@ public class UserService {
                     user.setId(UUID.randomUUID());
                     user.setUsername(username);
                     user.setEmail(email);
-                    user.setPasswordHash(Password.hash(password).withBcrypt().getResult());
+                    user.setPasswordHash(passwordEncoder.encode(password));
                     user.setRole(UserRole.ROLE_CLIENT);
                     user.setCreatedAt(Instant.now());
 
@@ -104,7 +107,7 @@ public class UserService {
                         user.setEmail(req.getEmail().trim().toLowerCase());
                     }
                     if (req.getPassword() != null) {
-                        user.setPasswordHash(Password.hash(req.getPassword()).withBcrypt().getResult());
+                        user.setPasswordHash(passwordEncoder.encode(req.getPassword()));
                     }
                     user.setUpdatedAt(Instant.now());
 
