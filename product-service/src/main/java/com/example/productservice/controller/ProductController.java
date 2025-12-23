@@ -3,6 +3,7 @@ package com.example.productservice.controller;
 import com.example.productservice.dto.ProductDto;
 import com.example.productservice.dto.ProductRequest;
 import com.example.productservice.exception.BadRequestException;
+import com.example.productservice.exception.UnauthorizedException;
 import com.example.productservice.service.ProductService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -15,6 +16,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -41,10 +45,10 @@ public class ProductController {
     @ApiResponses(value = {
             @ApiResponse(responseCode = "201", description = "Product created successfully"),
             @ApiResponse(responseCode = "400", description = "Invalid request body"),
-            @ApiResponse(responseCode = "409", description = "Product name already in use"),
-            @ApiResponse(responseCode = "401", description = "Unauthorized")
+            @ApiResponse(responseCode = "409", description = "Product name already in use")
     })
     @PostMapping
+    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<ProductDto> create(@Valid @RequestBody ProductRequest req, UriComponentsBuilder uriBuilder) {
         ProductDto dto = productService.create(req);
         URI location = uriBuilder.path("/api/v1/products/{id}").buildAndExpand(dto.getId()).toUri();
@@ -97,15 +101,23 @@ public class ProductController {
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "Product or actor not found"),
             @ApiResponse(responseCode = "409", description = "Product name already in use"),
-            @ApiResponse(responseCode = "503", description = "Dependent service is unavailable")
+            @ApiResponse(responseCode = "503", description = "User service is unavailable")
     })
     @PutMapping("/{id}")
     public ResponseEntity<ProductDto> updateProduct(
             @PathVariable("id") UUID id,
-            @Valid @RequestBody ProductRequest req) {
+            @Valid @RequestBody ProductRequest req,
+            @AuthenticationPrincipal Jwt jwt) {
 
-        logger.info("Updating product {}", id);
-        ProductDto dto = productService.updateProduct(id, req);
+        if (jwt == null) {
+            throw new UnauthorizedException("No authentication token");
+        }
+        String uidStr = jwt.getClaimAsString("uid");
+        if (uidStr == null) uidStr = jwt.getSubject();
+        UUID actorId = UUID.fromString(uidStr);
+
+        logger.info("Updating product {} by actor {}", id, actorId);
+        ProductDto dto = productService.updateProduct(id, req, actorId, jwt);
         return ResponseEntity.ok(dto);
     }
 
@@ -116,18 +128,26 @@ public class ProductController {
             @ApiResponse(responseCode = "403", description = "Insufficient rights"),
             @ApiResponse(responseCode = "404", description = "Product or actor not found"),
             @ApiResponse(responseCode = "409", description = "Error during deletion"),
-            @ApiResponse(responseCode = "503", description = "Dependent service is unavailable")
+            @ApiResponse(responseCode = "503", description = "User or application service is unavailable")
     })
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteProduct(
-            @PathVariable("id") UUID id) {
+            @PathVariable("id") UUID id,
+            @AuthenticationPrincipal Jwt jwt) {
 
-        logger.info("Deleting product {}", id);
-        productService.deleteProduct(id);
+        if (jwt == null) {
+            throw new UnauthorizedException("No authentication token");
+        }
+        String uidStr = jwt.getClaimAsString("uid");
+        if (uidStr == null) uidStr = jwt.getSubject();
+        UUID actorId = UUID.fromString(uidStr);
+
+        logger.info("Deleting product {} by actor {}", id, actorId);
+        productService.deleteProduct(id, actorId, jwt);
         return ResponseEntity.noContent().build();
     }
 
-    // Internal endpoints for other services
+    // Internal endpoints для других сервисов
     @GetMapping("/{id}/exists")
     public ResponseEntity<Boolean> productExists(@PathVariable UUID id) {
         boolean exists = productService.existsById(id);

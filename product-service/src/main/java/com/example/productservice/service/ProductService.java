@@ -5,18 +5,18 @@ import com.example.productservice.dto.ProductRequest;
 import com.example.productservice.exception.*;
 import com.example.productservice.feign.ApplicationServiceClient;
 import com.example.productservice.feign.AssignmentServiceClient;
-import com.example.productservice.feign.UserServiceClient;
 import com.example.productservice.model.entity.Product;
 import com.example.productservice.model.enums.AssignmentRole;
-import com.example.productservice.model.enums.UserRole;
 import com.example.productservice.repository.ProductRepository;
-import com.example.productservice.auth.AuthUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.*;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -27,18 +27,15 @@ public class ProductService {
     private static final Logger logger = LoggerFactory.getLogger(ProductService.class);
 
     private final ProductRepository productRepository;
-    private final UserServiceClient userServiceClient; // left for other usages (not used for role checks anymore)
     private final ApplicationServiceClient applicationServiceClient;
     private final AssignmentServiceClient assignmentServiceClient;
 
     @Autowired
     public ProductService(
             ProductRepository productRepository,
-            UserServiceClient userServiceClient,
             ApplicationServiceClient applicationServiceClient,
             AssignmentServiceClient assignmentServiceClient) {
         this.productRepository = productRepository;
-        this.userServiceClient = userServiceClient;
         this.applicationServiceClient = applicationServiceClient;
         this.assignmentServiceClient = assignmentServiceClient;
     }
@@ -96,34 +93,33 @@ public class ProductService {
                 .orElse(null);
     }
 
-    /**
-     * Update product. Authorization: only ROLE_ADMIN or PRODUCT_OWNER may update.
-     * Actor info is derived from JWT (AuthUtils.currentUserId and currentRoles).
-     */
     @Transactional
-    public ProductDto updateProduct(UUID productId, ProductRequest req) {
+    public ProductDto updateProduct(UUID productId, ProductRequest req, UUID actorId, Jwt jwt) {
         if (req == null) {
             throw new BadRequestException("Request is required");
         }
-
-        UUID actorId = AuthUtils.currentUserId().orElseThrow(() -> new UnauthorizedException("Unauthorized"));
-        boolean isAdmin = AuthUtils.hasRole("ROLE_ADMIN");
-
-        // Check existence of product
+        if (actorId == null) {
+            throw new UnauthorizedException("You must be authenticated to perform this action");
+        }
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
+        boolean isAdmin = false;
+        if (jwt != null) {
+            Object roleClaim = jwt.getClaims().get("role");
+            if (roleClaim != null && ("ROLE_ADMIN".equals(roleClaim.toString()))) {
+                isAdmin = true;
+            }
+        }
 
-        // Check ownership via assignment service if not admin
-        if (!isAdmin) {
-            Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
-                    actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
-            );
-            if (isOwner == null) {
-                throw new ServiceUnavailableException("Assignment service is unavailable now");
-            }
-            if (!isOwner) {
-                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can update product");
-            }
+        Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
+        );
+        if (isOwner == null) {
+            throw new ServiceUnavailableException("Assignment service is unavailable now");
+        }
+
+        if (!isAdmin && !isOwner) {
+            throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can update product");
         }
 
         if (req.getName() != null && !req.getName().trim().isEmpty()) {
@@ -145,34 +141,40 @@ public class ProductService {
     }
 
     @Transactional
-    public void deleteProduct(UUID productId) {
-        UUID actorId = AuthUtils.currentUserId().orElseThrow(() -> new UnauthorizedException("Unauthorized"));
-        boolean isAdmin = AuthUtils.hasRole("ROLE_ADMIN");
+    public void deleteProduct(UUID productId, UUID actorId, Jwt jwt) {
+        if (actorId == null) {
+            throw new UnauthorizedException("You must be authenticated to perform this action");
+        }
 
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("Product not found: " + productId));
 
-        if (!isAdmin) {
-            Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
-                    actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
-            );
-            if (isOwner == null) {
-                throw new ServiceUnavailableException("Assignment service is unavailable now");
-            }
-            if (!isOwner) {
-                throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can delete product");
+        boolean isAdmin = false;
+        if (jwt != null) {
+            Object roleClaim = jwt.getClaims().get("role");
+            if (roleClaim != null && ("ROLE_ADMIN".equals(roleClaim.toString()))) {
+                isAdmin = true;
             }
         }
 
-        try {
-            // Delete dependent applications via application service (propagated Authorization header)
-            applicationServiceClient.deleteApplicationsByProductId(productId);
-            logger.info("Applications deleted for product: {}", productId);
+        Boolean isOwner = assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()
+        );
+        if (isOwner == null) {
+            throw new ServiceUnavailableException("Assignment service is unavailable now");
+        }
 
-            // Delete product itself
+        if (!isAdmin && !isOwner) {
+            throw new ForbiddenException("Only ADMIN or PRODUCT_OWNER can delete product");
+        }
+
+        try {
+            applicationServiceClient.deleteApplicationsByProductId(productId);
             productRepository.delete(product);
             logger.info("Product deleted: {}", productId);
-
+        } catch (ServiceUnavailableException ex) {
+            logger.error("Application service is unavailable now");
+            throw new ServiceUnavailableException("Application service is unavailable now");
         } catch (Exception ex) {
             logger.error("Failed to delete product and its applications: {}", ex.getMessage(), ex);
             throw new ConflictException("Failed to delete product and its applications: " + ex.getMessage());
