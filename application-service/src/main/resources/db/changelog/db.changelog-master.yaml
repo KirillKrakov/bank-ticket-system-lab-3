@@ -1,0 +1,193 @@
+databaseChangeLog:
+  - changeSet:
+      id: 1-create-application-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: application
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: applicant_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: varchar(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: true
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: true
+
+  - changeSet:
+      id: 2-create-document-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: document
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: file_name
+                  type: varchar(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: content_type
+                  type: varchar(255)
+              - column:
+                  name: storage_path
+                  type: varchar(1000)
+              - column:
+                  name: application_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: document
+            baseColumnNames: application_id
+            referencedTableName: application
+            referencedColumnNames: id
+            constraintName: fk_document_application
+            onDelete: CASCADE
+
+  - changeSet:
+      id: 3-create-application_history-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: application_history
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: application_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: old_status
+                  type: varchar(50)
+              - column:
+                  name: new_status
+                  type: varchar(50)
+              - column:
+                  name: changed_by
+                  type: varchar(100)
+              - column:
+                  name: changed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: application_history
+            baseColumnNames: application_id
+            referencedTableName: application
+            referencedColumnNames: id
+            constraintName: fk_history_application
+            onDelete: CASCADE
+
+  - changeSet:
+      id: 4-create-application_tag-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: application_tag
+            columns:
+              - column:
+                  name: application_id
+                  type: uuid
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tag_name
+                  type: varchar(255)
+                  constraints:
+                    nullable: false
+        - addPrimaryKey:
+            tableName: application_tag
+            columnNames: application_id, tag_name
+            constraintName: pk_application_tag
+        - addForeignKeyConstraint:
+            baseTableName: application_tag
+            baseColumnNames: application_id
+            referencedTableName: application
+            referencedColumnNames: id
+            constraintName: fk_application_tag_application
+            onDelete: CASCADE
+
+  - changeSet:
+      id: 5-create-indexes
+      author: liquibase
+      changes:
+        - createIndex:
+            indexName: idx_application_applicant
+            tableName: application
+            columns:
+              - column:
+                  name: applicant_id
+        - createIndex:
+            indexName: idx_application_product
+            tableName: application
+            columns:
+              - column:
+                  name: product_id
+        - createIndex:
+            indexName: idx_application_created_at
+            tableName: application
+            columns:
+              - column:
+                  name: created_at
+            unique: false
+        - createIndex:
+            indexName: idx_document_application
+            tableName: document
+            columns:
+              - column:
+                  name: application_id
+        - createIndex:
+            indexName: idx_history_application
+            tableName: application_history
+            columns:
+              - column:
+                  name: application_id
+        - createIndex:
+            indexName: idx_application_tag_application
+            tableName: application_tag
+            columns:
+              - column:
+                  name: application_id

@@ -1,0 +1,34 @@
+databaseChangeLog:
+
+  - changeSet:
+      id: 1-create-tag-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: tag
+            remarks: Теги
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: name
+                  type: varchar(200)
+                  constraints:
+                    nullable: false
+                    unique: true
+
+  - changeSet:
+      id: 2-create-tag-name-index
+      author: liquibase
+      changes:
+        - createIndex:
+            tableName: tag
+            indexName: idx_tag_name
+            columns:
+              - column:
+                  name: name

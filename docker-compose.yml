@@ -1,0 +1,259 @@
+services:
+  service-discovery:
+    build:
+      context: ./service-discovery # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: service-discovery
+        JAR_NAME: service-discovery-1.0.0.jar
+    ports:
+      - "8761:8761"
+    networks:
+      - bank-network
+
+  config-server:
+    build:
+      context: ./config-server # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: config-server
+        JAR_NAME: config-server-1.0.0.jar
+    ports:
+      - "8888:8888"
+    networks:
+      - bank-network
+
+  postgres-user:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: userdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata-user:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  user-service:
+    build:
+      context: ./user-service # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: user-service
+        JAR_NAME: user-service-1.0.0.jar
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      USER_DB_URL: r2dbc:postgresql://postgres-user:5432/userdb
+      USER_DB_JDBC_URL: jdbc:postgresql://postgres-user:5432/userdb
+      USER_DB_USER: postgres
+      USER_DB_PASS: postgres
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+  postgres-product:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: productdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata-product:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  product-service:
+    build:
+      context: ./product-service # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: product-service
+        JAR_NAME: product-service-1.0.0.jar
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      PRODUCT_DB_URL: jdbc:postgresql://postgres-product:5432/productdb
+      PRODUCT_DB_USER: postgres
+      PRODUCT_DB_PASS: postgres
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      postgres-product:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+  postgres-assignment:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: assignmentdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata-assignment:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  assignment-service:
+    build:
+      context: ./assignment-service # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: assignment-service
+        JAR_NAME: assignment-service-1.0.0.jar
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      ASSIGNMENT_DB_URL: jdbc:postgresql://postgres-assignment:5432/assignmentdb
+      ASSIGNMENT_DB_USER: postgres
+      ASSIGNMENT_DB_PASS: postgres
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      postgres-assignment:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+  postgres-app:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5436:5432"
+    volumes:
+      - pgdata-app:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  application-service:
+    build:
+      context: ./application-service # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: application-service
+        JAR_NAME: application-service-1.0.0.jar
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      APP_DB_URL: jdbc:postgresql://postgres-app:5432/appdb
+      APP_DB_USER: postgres
+      APP_DB_PASS: postgres
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+  postgres-tag:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: tagdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5437:5432"
+    volumes:
+      - pgdata-tag:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  tag-service:
+    build:
+      context: ./tag-service # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: tag-service
+        JAR_NAME: tag-service-1.0.0.jar
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      TAG_DB_URL: jdbc:postgresql://postgres-tag:5432/tagdb
+      TAG_DB_USER: postgres
+      TAG_DB_PASS: postgres
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      postgres-tag:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+  gateway:
+    build:
+      context: ./gateway # потом поменять на .
+      dockerfile: Dockerfile
+      args:
+        MODULE_PATH: gateway
+        JAR_NAME: gateway-1.0.0.jar
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+    depends_on:
+      config-server:
+        condition: service_started
+      service-discovery:
+        condition: service_started
+    networks:
+      - bank-network
+
+networks:
+  bank-network:
+    driver: bridge
+
+volumes:
+  pgdata-user:
+  pgdata-product:
+  pgdata-assignment:
+  pgdata-app:
+  pgdata-tag:

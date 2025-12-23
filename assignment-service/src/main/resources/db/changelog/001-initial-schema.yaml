@@ -1,0 +1,60 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-user-product-assignment
+      author: kirillkrakov
+      changes:
+        - createTable:
+            tableName: user_product_assignment
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: user_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: role_on_product
+                  type: VARCHAR(100)
+              - column:
+                  name: assigned_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        - addUniqueConstraint:
+            tableName: user_product_assignment
+            columnNames: user_id, product_id
+            constraintName: uc_user_product
+
+        - createIndex:
+            indexName: idx_upa_user
+            tableName: user_product_assignment
+            columns:
+              - column:
+                  name: user_id
+
+        - createIndex:
+            indexName: idx_upa_product
+            tableName: user_product_assignment
+            columns:
+              - column:
+                  name: product_id
+
+        - createIndex:
+            indexName: idx_upa_user_product
+            tableName: user_product_assignment
+            columns:
+              - column:
+                  name: user_id
+              - column:
+                  name: product_id

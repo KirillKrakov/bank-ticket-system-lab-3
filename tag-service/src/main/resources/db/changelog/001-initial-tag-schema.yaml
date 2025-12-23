@@ -1,0 +1,28 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-tag-table
+      author: kirillkrakov
+      changes:
+        - createTable:
+            tableName: tag
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: name
+                  type: VARCHAR(200)
+                  constraints:
+                    nullable: false
+                    unique: true
+                    uniqueConstraintName: uk_tag_name
+
+        - createIndex:
+            indexName: idx_tag_name
+            tableName: tag
+            columns:
+              - column:
+                  name: name

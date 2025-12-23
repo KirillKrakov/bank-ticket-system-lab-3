@@ -1,0 +1,78 @@
+databaseChangeLog:
+  - changeSet:
+      id: 1-create-user-product-assignment-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: user_product_assignment
+            remarks: Назначения пользователей на продукты
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  remarks: Уникальный идентификатор назначения
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: user_id
+                  type: uuid
+                  remarks: ID пользователя
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: product_id
+                  type: uuid
+                  remarks: ID продукта
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: role_on_product
+                  type: varchar(100)
+                  remarks: Роль пользователя на продукте
+
+              - column:
+                  name: assigned_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  remarks: Дата назначения
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: 2-add-unique-constraint-user-product
+      author: liquibase
+      changes:
+        - addUniqueConstraint:
+            tableName: user_product_assignment
+            columnNames: user_id, product_id
+            constraintName: uc_user_product
+
+  - changeSet:
+      id: 3-create-indexes-user-product-assignment
+      author: liquibase
+      changes:
+        - createIndex:
+            tableName: user_product_assignment
+            indexName: idx_upa_user
+            columns:
+              - column:
+                  name: user_id
+
+        - createIndex:
+            tableName: user_product_assignment
+            indexName: idx_upa_product
+            columns:
+              - column:
+                  name: product_id
+
+        - createIndex:
+            tableName: user_product_assignment
+            indexName: idx_upa_user_product
+            columns:
+              - column:
+                  name: user_id
+              - column:
+                  name: product_id

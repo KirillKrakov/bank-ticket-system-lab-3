@@ -1,0 +1,41 @@
+databaseChangeLog:
+
+  - changeSet:
+      id: 1-create-product-table
+      author: liquibase
+      changes:
+        - createTable:
+            tableName: product
+            remarks: Банковские продукты
+            columns:
+              - column:
+                  name: id
+                  type: uuid
+                  remarks: Уникальный идентификатор продукта
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: name
+                  type: varchar(200)
+                  remarks: Название продукта
+                  constraints:
+                    nullable: false
+                    unique: true
+
+              - column:
+                  name: description
+                  type: varchar(1000)
+                  remarks: Описание продукта
+
+  - changeSet:
+      id: 2-create-product-indexes
+      author: liquibase
+      changes:
+        - createIndex:
+            tableName: product
+            indexName: idx_product_name
+            columns:
+              - column:
+                  name: name

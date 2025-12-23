@@ -1,0 +1,177 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-initial-schema
+      author: kirillkrakov
+      changes:
+        - createTable:
+            tableName: application
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: applicant_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: product_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: version
+                  type: BIGINT
+                  defaultValue: 0
+
+        - createTable:
+            tableName: document
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: file_name
+                  type: VARCHAR(500)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: content_type
+                  type: VARCHAR(255)
+              - column:
+                  name: storage_path
+                  type: VARCHAR(1000)
+              - column:
+                  name: application_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+            addForeignKeyConstraint:
+              baseTableName: document
+              baseColumnNames: application_id
+              referencedTableName: application
+              referencedColumnNames: id
+              constraintName: fk_document_application
+              onDelete: CASCADE
+
+        - createTable:
+            tableName: application_history
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: application_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: old_status
+                  type: VARCHAR(50)
+              - column:
+                  name: new_status
+                  type: VARCHAR(50)
+              - column:
+                  name: changed_by
+                  type: VARCHAR(100)
+              - column:
+                  name: changed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+            addForeignKeyConstraint:
+              baseTableName: application_history
+              baseColumnNames: application_id
+              referencedTableName: application
+              referencedColumnNames: id
+              constraintName: fk_history_application
+              onDelete: CASCADE
+
+        - createTable:
+            tableName: application_tag
+            columns:
+              - column:
+                  name: application_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+              - column:
+                  name: tag_name
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+            addPrimaryKey:
+              columnNames: application_id, tag_name
+              constraintName: pk_application_tag
+            addForeignKeyConstraint:
+              baseTableName: application_tag
+              baseColumnNames: application_id
+              referencedTableName: application
+              referencedColumnNames: id
+              constraintName: fk_application_tag_application
+              onDelete: CASCADE
+
+        - createIndex:
+            indexName: idx_application_applicant
+            tableName: application
+            columns:
+              - column:
+                  name: applicant_id
+
+        - createIndex:
+            indexName: idx_application_product
+            tableName: application
+            columns:
+              - column:
+                  name: product_id
+
+        - createIndex:
+            indexName: idx_application_created_at
+            tableName: application
+            columns:
+              - column:
+                  name: created_at
+                  descending: true
+
+        - createIndex:
+            indexName: idx_document_application
+            tableName: document
+            columns:
+              - column:
+                  name: application_id
+
+        - createIndex:
+            indexName: idx_history_application
+            tableName: application_history
+            columns:
+              - column:
+                  name: application_id
+
+        - createIndex:
+            indexName: idx_application_tag_application
+            tableName: application_tag
+            columns:
+              - column:
+                  name: application_id
