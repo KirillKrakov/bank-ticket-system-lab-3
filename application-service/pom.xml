@@ -114,6 +114,26 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- jjwt (core + impl + jackson) -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.11.5</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.11.5</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.11.5</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Swagger/OpenAPI (для WebFlux)-->
         <dependency>
             <groupId>org.springdoc</groupId>

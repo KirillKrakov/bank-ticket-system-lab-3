@@ -1,4 +1,4 @@
-/*package com.example.tagservice.controller;
+package com.example.tagservice.controller;
 
 import com.example.tagservice.dto.ApplicationInfoDto;
 import com.example.tagservice.dto.TagDto;
@@ -401,4 +401,3 @@ public class TagControllerTest {
         assertEquals(2, response.getBody().size());
     }
 }
-*/

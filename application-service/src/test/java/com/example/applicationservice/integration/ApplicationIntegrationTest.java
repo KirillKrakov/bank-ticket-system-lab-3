@@ -1,4 +1,4 @@
-/*package com.example.applicationservice.integration;
+package com.example.applicationservice.integration;
 
 import com.example.applicationservice.ApplicationServiceApplication;
 import com.example.applicationservice.dto.*;
@@ -6,6 +6,9 @@ import com.example.applicationservice.model.entity.Application;
 import com.example.applicationservice.model.enums.ApplicationStatus;
 import com.example.applicationservice.repository.ApplicationRepository;
 import com.example.applicationservice.repository.DocumentRepository;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,17 +20,19 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.web.client.HttpClientErrorException;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.nio.charset.StandardCharsets;
+import java.security.Key;
+import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 
@@ -35,6 +40,9 @@ import static org.springframework.boot.test.context.SpringBootTest.WebEnvironmen
 @ActiveProfiles("test")
 @SpringBootTest(webEnvironment = RANDOM_PORT, classes = ApplicationServiceApplication.class)
 public class ApplicationIntegrationTest {
+
+    // Test JWT secret (>=32 bytes for HMAC-SHA256)
+    private static final String SECRET = "test-secret-very-long-string-at-least-32-bytes-123456";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17-alpine")
@@ -54,6 +62,9 @@ public class ApplicationIntegrationTest {
         registry.add("spring.cloud.config.enabled", () -> "false");
         registry.add("feign.client.config.default.connectTimeout", () -> "5000");
         registry.add("feign.client.config.default.readTimeout", () -> "5000");
+
+        // Make jwt.secret available to application under test
+        registry.add("jwt.secret", () -> SECRET);
     }
 
     @Autowired
@@ -99,16 +110,6 @@ public class ApplicationIntegrationTest {
                     id.equals(managerId) || id.equals(anotherApplicantId);
         });
 
-        // Мок для ролей пользователей
-        when(userServiceClient.getUserRole(adminId))
-                .thenReturn(com.example.applicationservice.model.enums.UserRole.ROLE_ADMIN);
-        when(userServiceClient.getUserRole(managerId))
-                .thenReturn(com.example.applicationservice.model.enums.UserRole.ROLE_MANAGER);
-        when(userServiceClient.getUserRole(applicantId))
-                .thenReturn(com.example.applicationservice.model.enums.UserRole.ROLE_CLIENT);
-        when(userServiceClient.getUserRole(anotherApplicantId))
-                .thenReturn(com.example.applicationservice.model.enums.UserRole.ROLE_CLIENT);
-
         // Мок для проверки существования продукта
         when(productServiceClient.productExists(productId)).thenReturn(true);
         when(productServiceClient.productExists(any(UUID.class))).thenAnswer(invocation -> {
@@ -117,7 +118,7 @@ public class ApplicationIntegrationTest {
         });
 
         // Мок для тегов
-        when(tagServiceClient.createOrGetTagsBatch(any(List.class))).thenAnswer(invocation -> {
+        when(tagServiceClient.createOrGetTagsBatch(anyList())).thenAnswer(invocation -> {
             List<String> tagNames = invocation.getArgument(0);
             return tagNames.stream()
                     .map(name -> {
@@ -129,6 +130,22 @@ public class ApplicationIntegrationTest {
                     .toList();
         });
     }
+
+    // --- JWT helper ---
+    private String generateToken(UUID uid, String role) {
+        Key key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        var now = Instant.now();
+        return Jwts.builder()
+                .setSubject(uid.toString())
+                .claim("uid", uid.toString())
+                .claim("role", role)
+                .setIssuedAt(java.util.Date.from(now))
+                .setExpiration(java.util.Date.from(now.plusSeconds(3600)))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    // --- Tests ---
 
     @Test
     void createApplication_shouldReturnCreated() {
@@ -145,10 +162,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+
+        // applicant must be authenticated (token contains uid and role)
+        String token = generateToken(applicantId, "ROLE_CLIENT");
+        headers.setBearerAuth(token);
+
         HttpEntity<ApplicationRequest> entity = new HttpEntity<>(request, headers);
 
-        ResponseEntity<ApplicationDto> response = restTemplate.postForEntity(
+        ResponseEntity<ApplicationDto> response = restTemplate.exchange(
                 "/api/v1/applications",
+                HttpMethod.POST,
                 entity,
                 ApplicationDto.class
         );
@@ -173,7 +196,7 @@ public class ApplicationIntegrationTest {
     }
 
     @Test
-    void createApplication_productNotFound_shouldReturnBadRequest() {
+    void createApplication_productNotFound_shouldReturnNotFound() {
         UUID nonExistingProductId = UUID.randomUUID();
         when(productServiceClient.productExists(nonExistingProductId)).thenReturn(false);
 
@@ -183,24 +206,22 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<ApplicationRequest> entity = new HttpEntity<>(request, headers);
 
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    "/api/v1/applications",
-                    entity,
-                    String.class
-            );
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications",
+                HttpMethod.POST,
+                entity,
+                String.class
+        );
 
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.NOT_FOUND, e.getStatusCode());
-        }
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
 
     @Test
-    void createApplication_applicantNotFound_shouldReturnBadRequest() {
+    void createApplication_applicantNotFound_shouldReturnNotFound() {
         UUID nonExistingUserId = UUID.randomUUID();
         when(userServiceClient.userExists(nonExistingUserId)).thenReturn(false);
 
@@ -210,20 +231,19 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        // token subject still must be provided; use admin for auth
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+
         HttpEntity<ApplicationRequest> entity = new HttpEntity<>(request, headers);
 
-        try {
-            ResponseEntity<String> response = restTemplate.postForEntity(
-                    "/api/v1/applications",
-                    entity,
-                    String.class
-            );
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications",
+                HttpMethod.POST,
+                entity,
+                String.class
+        );
 
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.NOT_FOUND, e.getStatusCode());
-        }
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
 
     @Test
@@ -238,8 +258,16 @@ public class ApplicationIntegrationTest {
             applicationRepository.save(app);
         }
 
-        ResponseEntity<ApplicationDto[]> response = restTemplate.getForEntity(
+        // prepare Authorization header
+        String token = generateToken(adminId, "ROLE_ADMIN"); // или другой валидный uid/role
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<ApplicationDto[]> response = restTemplate.exchange(
                 "/api/v1/applications?page=0&size=3",
+                HttpMethod.GET,
+                entity,
                 ApplicationDto[].class
         );
 
@@ -248,7 +276,6 @@ public class ApplicationIntegrationTest {
 
         ApplicationDto[] applications = response.getBody();
         assertTrue(applications.length <= 3, "Should return at most 3 applications (page size)");
-
         if (applications.length > 0) {
             assertEquals(3, applications.length, "Should return exactly 3 applications for first page");
         }
@@ -256,8 +283,14 @@ public class ApplicationIntegrationTest {
 
     @Test
     void listApplications_pageSizeTooLarge_shouldReturnBadRequest() {
-        ResponseEntity<String> response = restTemplate.getForEntity(
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
                 "/api/v1/applications?page=0&size=100",
+                HttpMethod.GET,
+                entity,
                 String.class
         );
 
@@ -266,7 +299,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void getApplication_shouldReturnApplication() {
-        // Создаем заявку напрямую
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -275,8 +307,15 @@ public class ApplicationIntegrationTest {
         app.setCreatedAt(java.time.Instant.now());
         applicationRepository.save(app);
 
-        ResponseEntity<ApplicationDto> response = restTemplate.getForEntity(
+        String token = generateToken(adminId, "ROLE_ADMIN");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(token);
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<ApplicationDto> response = restTemplate.exchange(
                 "/api/v1/applications/{id}",
+                HttpMethod.GET,
+                entity,
                 ApplicationDto.class,
                 app.getId()
         );
@@ -289,22 +328,30 @@ public class ApplicationIntegrationTest {
 
     @Test
     void getApplication_notFound_shouldReturnNotFound() {
-        try {
-            ResponseEntity<String> response = restTemplate.getForEntity(
-                    "/api/v1/applications/{id}",
-                    String.class,
-                    UUID.randomUUID()
-            );
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.NOT_FOUND, e.getStatusCode());
-        }
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications/{id}",
+                HttpMethod.GET,
+                entity,
+                String.class,
+                UUID.randomUUID()
+        );
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
 
     @Test
     void streamApplications_limitTooLarge_shouldReturnBadRequest() {
-        ResponseEntity<String> response = restTemplate.getForEntity(
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN")); // или ROLE_CLIENT — любой валидный
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<String> response = restTemplate.exchange(
                 "/api/v1/applications/stream?limit=100",
+                HttpMethod.GET,
+                entity,
                 String.class
         );
 
@@ -313,7 +360,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void addTags_asApplicant_shouldReturnNoContent() {
-        // Создаем заявку для applicant
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -326,15 +372,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<List<String>> entity = new HttpEntity<>(tags, headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/tags?actorId={actorId}",
+                "/api/v1/applications/{id}/tags",
                 HttpMethod.PUT,
                 entity,
                 Void.class,
-                app.getId(),
-                applicantId
+                app.getId()
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -342,7 +389,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void addTags_asAdmin_shouldReturnNoContent() {
-        // Создаем заявку
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -355,15 +401,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+
         HttpEntity<List<String>> entity = new HttpEntity<>(tags, headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/tags?actorId={actorId}",
+                "/api/v1/applications/{id}/tags",
                 HttpMethod.PUT,
                 entity,
                 Void.class,
-                app.getId(),
-                adminId
+                app.getId()
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -371,7 +418,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void addTags_withoutPermissions_shouldReturnForbidden() {
-        // Создаем заявку другого пользователя
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(anotherApplicantId);
@@ -384,15 +430,17 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        // actor is applicantId (not owner/admin) trying to modify anotherApplicantId's app
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<List<String>> entity = new HttpEntity<>(tags, headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/tags?actorId={actorId}",
+                "/api/v1/applications/{id}/tags",
                 HttpMethod.PUT,
                 entity,
                 Void.class,
-                app.getId(),
-                applicantId // Пытается изменить чужую заявку
+                app.getId()
         );
 
         assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
@@ -400,7 +448,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void removeTags_asApplicant_shouldReturnNoContent() {
-        // Создаем заявку с тегами
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -414,15 +461,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<List<String>> entity = new HttpEntity<>(tagsToRemove, headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/tags?actorId={actorId}",
+                "/api/v1/applications/{id}/tags",
                 HttpMethod.DELETE,
                 entity,
                 Void.class,
-                app.getId(),
-                applicantId
+                app.getId()
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -430,7 +478,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void changeStatus_asAdmin_shouldReturnOk() {
-        // Создаем заявку
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -443,15 +490,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+
         HttpEntity<String> entity = new HttpEntity<>(newStatus, headers);
 
         ResponseEntity<ApplicationDto> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/status?actorId={actorId}",
+                "/api/v1/applications/{id}/status",
                 HttpMethod.PUT,
                 entity,
                 ApplicationDto.class,
-                app.getId(),
-                adminId
+                app.getId()
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -461,7 +509,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void changeStatus_asManager_shouldReturnOk() {
-        // Создаем заявку другого пользователя (не менеджера)
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -474,15 +521,16 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(managerId, "ROLE_MANAGER"));
+
         HttpEntity<String> entity = new HttpEntity<>(newStatus, headers);
 
         ResponseEntity<ApplicationDto> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/status?actorId={actorId}",
+                "/api/v1/applications/{id}/status",
                 HttpMethod.PUT,
                 entity,
                 ApplicationDto.class,
-                app.getId(),
-                managerId
+                app.getId()
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -504,23 +552,19 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(managerId, "ROLE_MANAGER"));
+
         HttpEntity<String> entity = new HttpEntity<>(newStatus, headers);
 
-        try {
-            ResponseEntity<String> response = restTemplate.exchange(
-                    "/api/v1/applications/{id}/status?actorId={actorId}",
-                    HttpMethod.PUT,
-                    entity,
-                    String.class,
-                    app.getId(),
-                    managerId
-            );
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications/{id}/status",
+                HttpMethod.PUT,
+                entity,
+                String.class,
+                app.getId()
+        );
 
-            assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
-
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.CONFLICT, e.getStatusCode());
-        }
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
     }
 
     @Test
@@ -537,28 +581,24 @@ public class ApplicationIntegrationTest {
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        // actor is applicantId, not manager/admin
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<String> entity = new HttpEntity<>(newStatus, headers);
 
-        try {
-            ResponseEntity<String> response = restTemplate.exchange(
-                    "/api/v1/applications/{id}/status?actorId={actorId}",
-                    HttpMethod.PUT,
-                    entity,
-                    String.class,
-                    app.getId(),
-                    applicantId
-            );
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications/{id}/status",
+                HttpMethod.PUT,
+                entity,
+                String.class,
+                app.getId()
+        );
 
-            assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
-
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.FORBIDDEN, e.getStatusCode());
-        }
+        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
     }
 
     @Test
     void deleteApplication_asAdmin_shouldReturnNoContent() {
-        // Создаем заявку
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -567,13 +607,15 @@ public class ApplicationIntegrationTest {
         app.setCreatedAt(java.time.Instant.now());
         applicationRepository.save(app);
 
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(adminId, "ROLE_ADMIN"));
+
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}?actorId={actorId}",
+                "/api/v1/applications/{id}",
                 HttpMethod.DELETE,
-                null,
+                new HttpEntity<>(headers),
                 Void.class,
-                app.getId(),
-                adminId
+                app.getId()
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -582,7 +624,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void deleteApplication_withoutAdminRights_shouldReturnForbidden() {
-        // Создаем заявку
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -591,13 +632,15 @@ public class ApplicationIntegrationTest {
         app.setCreatedAt(java.time.Instant.now());
         applicationRepository.save(app);
 
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/applications/{id}?actorId={actorId}",
+                "/api/v1/applications/{id}",
                 HttpMethod.DELETE,
-                null,
+                new HttpEntity<>(headers),
                 Void.class,
-                app.getId(),
-                applicantId // Не администратор
+                app.getId()
         );
 
         assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
@@ -606,7 +649,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void getApplicationHistory_asApplicant_shouldReturnHistory() {
-        // Создаем заявку с историей
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -615,16 +657,15 @@ public class ApplicationIntegrationTest {
         app.setCreatedAt(java.time.Instant.now());
         applicationRepository.save(app);
 
-        // Добавляем запись в историю (в реальной системе это делается при изменении статуса)
-        // Здесь просто тестируем доступ
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
 
         ResponseEntity<List<ApplicationHistoryDto>> response = restTemplate.exchange(
-                "/api/v1/applications/{id}/history?actorId={actorId}",
+                "/api/v1/applications/{id}/history",
                 HttpMethod.GET,
-                null,
+                new HttpEntity<>(headers),
                 new ParameterizedTypeReference<List<ApplicationHistoryDto>>() {},
-                app.getId(),
-                applicantId
+                app.getId()
         );
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
@@ -641,26 +682,23 @@ public class ApplicationIntegrationTest {
         app.setCreatedAt(java.time.Instant.now());
         applicationRepository.save(app);
 
-        try {
-            ResponseEntity<String> response = restTemplate.exchange(
-                    "/api/v1/applications/{id}/history?actorId={actorId}",
-                    HttpMethod.GET,
-                    null,
-                    String.class,
-                    app.getId(),
-                    applicantId
-            );
+        HttpHeaders headers = new HttpHeaders();
+        // actor is applicantId (not admin/manager and not owner)
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
 
-            assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/v1/applications/{id}/history",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class,
+                app.getId()
+        );
 
-        } catch (HttpClientErrorException e) {
-            assertEquals(HttpStatus.FORBIDDEN, e.getStatusCode());
-        }
+        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
     }
 
     @Test
     void deleteApplicationsByUserId_internal_shouldReturnNoContent() {
-        // Создаем несколько заявок для пользователя
         for (int i = 0; i < 3; i++) {
             Application app = new Application();
             app.setId(UUID.randomUUID());
@@ -688,7 +726,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void deleteApplicationsByProductId_internal_shouldReturnNoContent() {
-        // Создаем несколько заявок для продукта
         for (int i = 0; i < 3; i++) {
             Application app = new Application();
             app.setId(UUID.randomUUID());
@@ -716,7 +753,6 @@ public class ApplicationIntegrationTest {
 
     @Test
     void getApplicationsByTag_shouldReturnApplications() {
-        // Создаем заявку с тегом
         Application app = new Application();
         app.setId(UUID.randomUUID());
         app.setApplicantId(applicantId);
@@ -726,7 +762,6 @@ public class ApplicationIntegrationTest {
         app.setTags(java.util.Set.of("urgent"));
         applicationRepository.save(app);
 
-        // Создаем заявку без этого тега
         Application app2 = new Application();
         app2.setId(UUID.randomUUID());
         app2.setApplicantId(anotherApplicantId);
@@ -755,14 +790,17 @@ public class ApplicationIntegrationTest {
         ApplicationRequest request = new ApplicationRequest();
         request.setApplicantId(applicantId);
         request.setProductId(productId);
-        request.setTags(List.of()); // Пустой список тегов
+        request.setTags(List.of());
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<ApplicationRequest> entity = new HttpEntity<>(request, headers);
 
-        ResponseEntity<ApplicationDto> response = restTemplate.postForEntity(
+        ResponseEntity<ApplicationDto> response = restTemplate.exchange(
                 "/api/v1/applications",
+                HttpMethod.POST,
                 entity,
                 ApplicationDto.class
         );
@@ -778,14 +816,17 @@ public class ApplicationIntegrationTest {
         ApplicationRequest request = new ApplicationRequest();
         request.setApplicantId(applicantId);
         request.setProductId(productId);
-        request.setDocuments(List.of()); // Пустой список документов
+        request.setDocuments(List.of());
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(generateToken(applicantId, "ROLE_CLIENT"));
+
         HttpEntity<ApplicationRequest> entity = new HttpEntity<>(request, headers);
 
-        ResponseEntity<ApplicationDto> response = restTemplate.postForEntity(
+        ResponseEntity<ApplicationDto> response = restTemplate.exchange(
                 "/api/v1/applications",
+                HttpMethod.POST,
                 entity,
                 ApplicationDto.class
         );
@@ -796,4 +837,3 @@ public class ApplicationIntegrationTest {
         assertTrue(response.getBody().getDocuments().isEmpty());
     }
 }
-*/
