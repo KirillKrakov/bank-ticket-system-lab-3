@@ -1,7 +1,7 @@
 services:
   service-discovery:
     build:
-      context: ./service-discovery # потом поменять на .
+      context: . # можно поменять на ./service-discovery (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: service-discovery
@@ -13,7 +13,7 @@ services:
 
   config-server:
     build:
-      context: ./config-server # потом поменять на .
+      context: . # можно поменять на ./config-server (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: config-server
@@ -43,7 +43,7 @@ services:
 
   user-service:
     build:
-      context: ./user-service # потом поменять на .
+      context: . # можно поменять на ./user-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: user-service
@@ -85,7 +85,7 @@ services:
 
   product-service:
     build:
-      context: ./product-service # потом поменять на .
+      context: . # можно поменять на ./product-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: product-service
@@ -124,7 +124,7 @@ services:
 
   assignment-service:
     build:
-      context: ./assignment-service # потом поменять на .
+      context: . # можно поменять на ./assignment-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: assignment-service
@@ -165,7 +165,7 @@ services:
 
   application-service:
     build:
-      context: ./application-service # потом поменять на .
+      context: . # можно поменять на ./application-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: application-service
@@ -206,7 +206,7 @@ services:
 
   tag-service:
     build:
-      context: ./tag-service # потом поменять на .
+      context: . # можно поменять на ./tag-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: tag-service
@@ -229,7 +229,7 @@ services:
 
   gateway:
     build:
-      context: ./gateway # потом поменять на .
+      context: ./gateway # можно поменять на ./gateway (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: gateway

@@ -7,7 +7,6 @@ import com.example.userservice.feign.ApplicationServiceClient;
 import com.example.userservice.model.entity.User;
 import com.example.userservice.model.enums.UserRole;
 import com.example.userservice.repository.UserRepository;
-import com.password4j.Password;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
