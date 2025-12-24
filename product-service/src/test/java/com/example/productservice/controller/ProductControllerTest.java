@@ -1,6 +1,5 @@
-/*package com.example.productservice.controller;
+package com.example.productservice.controller;
 
-import com.example.productservice.controller.ProductController;
 import com.example.productservice.dto.ProductDto;
 import com.example.productservice.dto.ProductRequest;
 import com.example.productservice.exception.*;
@@ -16,11 +15,14 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.util.UriComponentsBuilder;
+import org.springframework.security.oauth2.jwt.Jwt;
 
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -55,7 +57,7 @@ public class ProductControllerTest {
         ProductRequest request = createSampleProductRequest();
         ProductDto responseDto = createSampleProductDto();
 
-        when(productService.create(request)).thenReturn(responseDto);
+        when(productService.create(any(ProductRequest.class))).thenReturn(responseDto);
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.newInstance();
         ResponseEntity<ProductDto> response = productController.create(request, uriBuilder);
@@ -71,7 +73,7 @@ public class ProductControllerTest {
     void create_badRequest_throwsBadRequestException() {
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.create(request))
+        when(productService.create(any(ProductRequest.class)))
                 .thenThrow(new BadRequestException("Invalid request"));
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.newInstance();
@@ -84,7 +86,7 @@ public class ProductControllerTest {
     void create_conflict_throwsConflictException() {
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.create(request))
+        when(productService.create(any(ProductRequest.class)))
                 .thenThrow(new ConflictException("Product name already in use"));
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.newInstance();
@@ -104,7 +106,8 @@ public class ProductControllerTest {
 
         when(productService.list(0, 20)).thenReturn(page);
 
-        ResponseEntity<List<ProductDto>> response = productController.list(0, 20, mock(org.springframework.mock.web.MockHttpServletResponse.class));
+        HttpServletResponse mockResponse = mock(HttpServletResponse.class);
+        ResponseEntity<List<ProductDto>> response = productController.list(0, 20, mockResponse);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -114,7 +117,7 @@ public class ProductControllerTest {
     @Test
     void list_sizeExceedsMax_throwsBadRequestException() {
         assertThrows(BadRequestException.class, () ->
-                productController.list(0, 100, mock(org.springframework.mock.web.MockHttpServletResponse.class))
+                productController.list(0, 100, mock(HttpServletResponse.class))
         );
         verify(productService, never()).list(anyInt(), anyInt());
     }
@@ -125,7 +128,7 @@ public class ProductControllerTest {
                 .thenThrow(new BadRequestException("Invalid parameters"));
 
         assertThrows(BadRequestException.class, () ->
-                productController.list(0, 20, mock(org.springframework.mock.web.MockHttpServletResponse.class))
+                productController.list(0, 20, mock(HttpServletResponse.class))
         );
     }
 
@@ -180,9 +183,13 @@ public class ProductControllerTest {
         ProductRequest request = createSampleProductRequest();
         ProductDto dto = createSampleProductDto();
 
-        when(productService.updateProduct(productId, request, actorId)).thenReturn(dto);
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+        // removed unnecessary jwt.getSubject() stub
 
-        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, actorId);
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt))).thenReturn(dto);
+
+        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, jwt);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(dto, response.getBody());
@@ -194,11 +201,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new BadRequestException("Invalid request"));
 
         assertThrows(BadRequestException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
         );
     }
 
@@ -208,11 +218,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new UnauthorizedException("Actor is unauthorized"));
 
         assertThrows(UnauthorizedException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
         );
     }
 
@@ -222,11 +235,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new ForbiddenException("Insufficient rights"));
 
         assertThrows(ForbiddenException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
         );
     }
 
@@ -236,11 +252,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new NotFoundException("Product not found"));
 
         assertThrows(NotFoundException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
         );
     }
 
@@ -250,11 +269,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new ConflictException("Product name already in use"));
 
         assertThrows(ConflictException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
         );
     }
 
@@ -264,11 +286,25 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = createSampleProductRequest();
 
-        when(productService.updateProduct(productId, request, actorId))
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt)))
                 .thenThrow(new ServiceUnavailableException("User service is unavailable"));
 
         assertThrows(ServiceUnavailableException.class, () ->
-                productController.updateProduct(productId, request, actorId)
+                productController.updateProduct(productId, request, jwt)
+        );
+    }
+
+    @Test
+    void updateProduct_nullJwt_throwsUnauthorizedException() {
+        UUID productId = UUID.randomUUID();
+        ProductRequest request = createSampleProductRequest();
+
+        // controller checks jwt == null and throws UnauthorizedException before calling service
+        assertThrows(UnauthorizedException.class, () ->
+                productController.updateProduct(productId, request, null)
         );
     }
 
@@ -280,9 +316,12 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
-        doNothing().when(productService).deleteProduct(productId, actorId);
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
 
-        ResponseEntity<Void> response = productController.deleteProduct(productId, actorId);
+        doNothing().when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
+
+        ResponseEntity<Void> response = productController.deleteProduct(productId, jwt);
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
         assertNull(response.getBody());
@@ -293,11 +332,14 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
         doThrow(new UnauthorizedException("Actor is unauthorized"))
-                .when(productService).deleteProduct(productId, actorId);
+                .when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
 
         assertThrows(UnauthorizedException.class, () ->
-                productController.deleteProduct(productId, actorId)
+                productController.deleteProduct(productId, jwt)
         );
     }
 
@@ -306,11 +348,14 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
         doThrow(new ForbiddenException("Insufficient rights"))
-                .when(productService).deleteProduct(productId, actorId);
+                .when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
 
         assertThrows(ForbiddenException.class, () ->
-                productController.deleteProduct(productId, actorId)
+                productController.deleteProduct(productId, jwt)
         );
     }
 
@@ -319,11 +364,14 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
         doThrow(new NotFoundException("Product not found"))
-                .when(productService).deleteProduct(productId, actorId);
+                .when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
 
         assertThrows(NotFoundException.class, () ->
-                productController.deleteProduct(productId, actorId)
+                productController.deleteProduct(productId, jwt)
         );
     }
 
@@ -332,11 +380,14 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
         doThrow(new ConflictException("Error during deletion"))
-                .when(productService).deleteProduct(productId, actorId);
+                .when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
 
         assertThrows(ConflictException.class, () ->
-                productController.deleteProduct(productId, actorId)
+                productController.deleteProduct(productId, jwt)
         );
     }
 
@@ -345,11 +396,14 @@ public class ProductControllerTest {
         UUID productId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
 
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+
         doThrow(new ServiceUnavailableException("User service is unavailable"))
-                .when(productService).deleteProduct(productId, actorId);
+                .when(productService).deleteProduct(eq(productId), eq(actorId), eq(jwt));
 
         assertThrows(ServiceUnavailableException.class, () ->
-                productController.deleteProduct(productId, actorId)
+                productController.deleteProduct(productId, jwt)
         );
     }
 
@@ -389,7 +443,7 @@ public class ProductControllerTest {
         request.setName("");
         request.setDescription("Description");
 
-        when(productService.create(request))
+        when(productService.create(any(ProductRequest.class)))
                 .thenThrow(new BadRequestException("Product name must be in request body and not empty"));
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.newInstance();
@@ -404,7 +458,7 @@ public class ProductControllerTest {
         request.setName("Product Name");
         request.setDescription("");
 
-        when(productService.create(request))
+        when(productService.create(any(ProductRequest.class)))
                 .thenThrow(new BadRequestException("Product description must be in request body and not empty"));
 
         UriComponentsBuilder uriBuilder = UriComponentsBuilder.newInstance();
@@ -425,29 +479,12 @@ public class ProductControllerTest {
     }
 
     @Test
-    void updateProduct_nullActorId_throwsUnauthorizedException() {
+    void deleteProduct_nullJwt_throwsUnauthorizedException() {
         UUID productId = UUID.randomUUID();
-        ProductRequest request = createSampleProductRequest();
-        UUID nullActorId = null;
 
-        when(productService.updateProduct(productId, request, nullActorId))
-                .thenThrow(new UnauthorizedException("You must specify the actorId to authorize in this request"));
-
+        // controller checks jwt == null and throws UnauthorizedException before calling service
         assertThrows(UnauthorizedException.class, () ->
-                productController.updateProduct(productId, request, nullActorId)
-        );
-    }
-
-    @Test
-    void deleteProduct_nullActorId_throwsUnauthorizedException() {
-        UUID productId = UUID.randomUUID();
-        UUID nullActorId = null;
-
-        doThrow(new UnauthorizedException("You must specify the actorId to authorize in this request"))
-                .when(productService).deleteProduct(productId, nullActorId);
-
-        assertThrows(UnauthorizedException.class, () ->
-                productController.deleteProduct(productId, nullActorId)
+                productController.deleteProduct(productId, null)
         );
     }
 
@@ -457,7 +494,8 @@ public class ProductControllerTest {
 
         when(productService.list(0, 20)).thenReturn(page);
 
-        ResponseEntity<List<ProductDto>> response = productController.list(0, 20, mock(org.springframework.mock.web.MockHttpServletResponse.class));
+        HttpServletResponse mockResponse = mock(HttpServletResponse.class);
+        ResponseEntity<List<ProductDto>> response = productController.list(0, 20, mockResponse);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -470,7 +508,8 @@ public class ProductControllerTest {
 
         when(productService.list(100, 20)).thenReturn(page);
 
-        ResponseEntity<List<ProductDto>> response = productController.list(100, 20, mock(org.springframework.mock.web.MockHttpServletResponse.class));
+        HttpServletResponse mockResponse = mock(HttpServletResponse.class);
+        ResponseEntity<List<ProductDto>> response = productController.list(100, 20, mockResponse);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
@@ -483,12 +522,14 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = new ProductRequest();
         request.setName("Updated Name");
-        // description не устанавливаем - partial update
         ProductDto dto = createSampleProductDto();
 
-        when(productService.updateProduct(productId, request, actorId)).thenReturn(dto);
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
 
-        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, actorId);
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt))).thenReturn(dto);
+
+        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, jwt);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(dto, response.getBody());
@@ -500,15 +541,16 @@ public class ProductControllerTest {
         UUID actorId = UUID.randomUUID();
         ProductRequest request = new ProductRequest();
         request.setDescription("Updated Description");
-        // name не устанавливаем - оставляем прежним
         ProductDto dto = createSampleProductDto();
 
-        when(productService.updateProduct(productId, request, actorId)).thenReturn(dto);
+        Jwt jwt = mock(Jwt.class);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
 
-        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, actorId);
+        when(productService.updateProduct(eq(productId), any(ProductRequest.class), eq(actorId), eq(jwt))).thenReturn(dto);
+
+        ResponseEntity<ProductDto> response = productController.updateProduct(productId, request, jwt);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(dto, response.getBody());
     }
 }
-*/

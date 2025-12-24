@@ -1,4 +1,4 @@
-/*package com.example.userservice.service;
+package com.example.userservice.service;
 
 import com.example.userservice.dto.UserDto;
 import com.example.userservice.dto.UserRequest;
@@ -7,23 +7,20 @@ import com.example.userservice.feign.ApplicationServiceClient;
 import com.example.userservice.model.entity.User;
 import com.example.userservice.model.enums.UserRole;
 import com.example.userservice.repository.UserRepository;
-import com.example.userservice.service.UserService;
-import com.password4j.Hash;
-import com.password4j.HashBuilder;
-import com.password4j.Password;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContextImpl;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
@@ -40,6 +37,9 @@ class UserServiceTest {
     @Mock
     private ApplicationServiceClient applicationServiceClient;
 
+    @Mock
+    private PasswordEncoder passwordEncoder;
+
     @InjectMocks
     private UserService userService;
 
@@ -48,7 +48,7 @@ class UserServiceTest {
 
     @BeforeEach
     void setUp() {
-        userService = new UserService(userRepository, applicationServiceClient);
+        // Mockito will inject mocks into userService because of @InjectMocks
     }
 
     // -----------------------
@@ -72,32 +72,24 @@ class UserServiceTest {
 
         when(userRepository.existsByUsername("alice")).thenReturn(Mono.just(false));
         when(userRepository.existsByEmail("alice@example.com")).thenReturn(Mono.just(false));
+        when(passwordEncoder.encode("StrongPass123")).thenReturn("encodedPassword");
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(savedUser));
 
-        try (MockedStatic<Password> mockedStatic = Mockito.mockStatic(Password.class)) {
-            HashBuilder mockHashBuilder = mock(HashBuilder.class);
-            Hash mockHash = mock(Hash.class);
+        // Act & Assert
+        StepVerifier.create(userService.create(req))
+                .expectNextMatches(dto -> {
+                    assertEquals(testUserId, dto.getId());
+                    assertEquals("alice", dto.getUsername());
+                    assertEquals("alice@example.com", dto.getEmail());
+                    assertEquals(UserRole.ROLE_CLIENT, dto.getRole());
+                    return true;
+                })
+                .verifyComplete();
 
-            when(mockHash.getResult()).thenReturn("encodedPassword");
-            when(mockHashBuilder.withBcrypt()).thenReturn(mockHash);
-            mockedStatic.when(() -> Password.hash("StrongPass123")).thenReturn(mockHashBuilder);
-
-            // Act & Assert
-            StepVerifier.create(userService.create(req))
-                    .expectNextMatches(dto -> {
-                        assertEquals(testUserId, dto.getId());
-                        assertEquals("alice", dto.getUsername());
-                        assertEquals("alice@example.com", dto.getEmail());
-                        assertEquals(UserRole.ROLE_CLIENT, dto.getRole());
-                        return true;
-                    })
-                    .verifyComplete();
-
-            mockedStatic.verify(() -> Password.hash("StrongPass123"));
-            verify(userRepository).existsByUsername("alice");
-            verify(userRepository).existsByEmail("alice@example.com");
-            verify(userRepository).save(any(User.class));
-        }
+        verify(userRepository).existsByUsername("alice");
+        verify(userRepository).existsByEmail("alice@example.com");
+        verify(passwordEncoder).encode("StrongPass123");
+        verify(userRepository).save(any(User.class));
     }
 
     @Test
@@ -255,7 +247,7 @@ class UserServiceTest {
     }
 
     // -----------------------
-    // update tests
+    // update tests (now service reads actor from ReactiveSecurityContext)
     // -----------------------
     @Test
     void update_Success_UpdatesUser() {
@@ -285,20 +277,22 @@ class UserServiceTest {
         req.setEmail("new@example.com");
         req.setPassword("newPass123");
 
+        // mock repository and encoder
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(existingUser));
+        when(passwordEncoder.encode("newPass123")).thenReturn("newHash");
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(updatedUser));
 
-        try (MockedStatic<Password> mockedStatic = Mockito.mockStatic(Password.class)) {
-            HashBuilder mockHashBuilder = mock(HashBuilder.class);
-            Hash mockHash = mock(Hash.class);
+        // mock security context to simulate authenticated admin
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-            when(mockHash.getResult()).thenReturn("newHash");
-            when(mockHashBuilder.withBcrypt()).thenReturn(mockHash);
-            mockedStatic.when(() -> Password.hash("newPass123")).thenReturn(mockHashBuilder);
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
 
             // Act & Assert
-            StepVerifier.create(userService.update(testUserId, actorAdminId, req))
+            StepVerifier.create(userService.update(testUserId, req))
                     .expectNextMatches(dto -> {
                         assertEquals(testUserId, dto.getId());
                         assertEquals("new", dto.getUsername());
@@ -309,6 +303,7 @@ class UserServiceTest {
 
             verify(userRepository).findById(actorAdminId);
             verify(userRepository).findById(testUserId);
+            verify(passwordEncoder).encode("newPass123");
             verify(userRepository).save(any(User.class));
         }
     }
@@ -326,16 +321,24 @@ class UserServiceTest {
         UserRequest req = new UserRequest();
         req.setUsername("new");
 
-        // Act & Assert
-        StepVerifier.create(userService.update(testUserId, actorAdminId, req))
-                .expectErrorMatches(throwable ->
-                        throwable instanceof NotFoundException &&
-                                throwable.getMessage().contains("User not found"))
-                .verify();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository).findById(actorAdminId);
-        verify(userRepository).findById(testUserId);
-        verify(userRepository, never()).save(any());
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.update(testUserId, req))
+                    .expectErrorMatches(throwable ->
+                            throwable instanceof NotFoundException &&
+                                    throwable.getMessage().contains("User not found"))
+                    .verify();
+
+            verify(userRepository).findById(actorAdminId);
+            verify(userRepository).findById(testUserId);
+            verify(userRepository, never()).save(any());
+        }
     }
 
     @Test
@@ -352,14 +355,22 @@ class UserServiceTest {
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(nonAdmin));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(testUser));
 
-        // Act & Assert
-        StepVerifier.create(userService.update(testUserId, actorAdminId, new UserRequest()))
-                .expectErrorMatches(throwable ->
-                        throwable instanceof ForbiddenException &&
-                                throwable.getMessage().contains("Only ADMIN can perform this action"))
-                .verify();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository).findById(actorAdminId);
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.update(testUserId, new UserRequest()))
+                    .expectErrorMatches(throwable ->
+                            throwable instanceof ForbiddenException &&
+                                    throwable.getMessage().contains("Only ADMIN can perform this action"))
+                    .verify();
+
+            verify(userRepository).findById(actorAdminId);
+        }
     }
 
     // -----------------------
@@ -379,21 +390,28 @@ class UserServiceTest {
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(userToDelete));
 
-        // Если метод void
+        // applicationServiceClient.deleteApplicationsByUserId is void -> doNothing
         doNothing().when(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
-
         when(userRepository.delete(userToDelete)).thenReturn(Mono.empty());
 
-        // Act & Assert
-        StepVerifier.create(userService.delete(testUserId, actorAdminId))
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
-        verify(userRepository).delete(userToDelete);
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.delete(testUserId))
+                    .verifyComplete();
+
+            verify(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
+            verify(userRepository).delete(userToDelete);
+        }
     }
 
     @Test
-    void delete_ApplicationServiceFails_ContinuesUserDeletion() {
+    void delete_ApplicationServiceFails_ContinuesUserDeletion_or_errorsDependingOnImplementation() {
         // Arrange
         User admin = new User();
         admin.setId(actorAdminId);
@@ -407,16 +425,27 @@ class UserServiceTest {
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(userToDelete));
 
         // Feign клиент бросает исключение
-        when(applicationServiceClient.deleteApplicationsByUserId(testUserId.toString()))
-                .thenThrow(new RuntimeException("Service unavailable"));
+        doThrow(new RuntimeException("Service unavailable"))
+                .when(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
 
         when(userRepository.delete(userToDelete)).thenReturn(Mono.empty());
 
-        // Act & Assert
-        StepVerifier.create(userService.delete(testUserId, actorAdminId))
-                .verifyError();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository).delete(userToDelete);
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            // Depending on implementation: if exception from applicationServiceClient is not swallowed, service.delete will error.
+            StepVerifier.create(userService.delete(testUserId))
+                    .expectError() // expecting error because feign call throws in fromCallable
+                    .verify();
+
+            // ensure delete on repository still might be invoked in implementation; keep verification for repository.delete called (or not)
+            verify(userRepository).delete(userToDelete);
+        }
     }
 
     // -----------------------
@@ -441,12 +470,20 @@ class UserServiceTest {
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(client));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(promotedUser));
 
-        // Act & Assert
-        StepVerifier.create(userService.promoteToManager(testUserId, actorAdminId))
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository).save(argThat(user ->
-                user.getRole() == UserRole.ROLE_MANAGER));
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.promoteToManager(testUserId))
+                    .verifyComplete();
+
+            verify(userRepository).save(argThat(user ->
+                    user.getRole() == UserRole.ROLE_MANAGER));
+        }
     }
 
     @Test
@@ -463,11 +500,19 @@ class UserServiceTest {
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
 
-        // Act & Assert
-        StepVerifier.create(userService.promoteToManager(testUserId, actorAdminId))
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository, never()).save(any());
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.promoteToManager(testUserId))
+                    .verifyComplete();
+
+            verify(userRepository, never()).save(any());
+        }
     }
 
     // -----------------------
@@ -492,12 +537,20 @@ class UserServiceTest {
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(demotedUser));
 
-        // Act & Assert
-        StepVerifier.create(userService.demoteToClient(testUserId, actorAdminId))
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository).save(argThat(user ->
-                user.getRole() == UserRole.ROLE_CLIENT));
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.demoteToClient(testUserId))
+                    .verifyComplete();
+
+            verify(userRepository).save(argThat(user ->
+                    user.getRole() == UserRole.ROLE_CLIENT));
+        }
     }
 
     @Test
@@ -514,11 +567,19 @@ class UserServiceTest {
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(client));
 
-        // Act & Assert
-        StepVerifier.create(userService.demoteToClient(testUserId, actorAdminId))
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
 
-        verify(userRepository, never()).save(any());
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.demoteToClient(testUserId))
+                    .verifyComplete();
+
+            verify(userRepository, never()).save(any());
+        }
     }
 
     // -----------------------
@@ -539,7 +600,7 @@ class UserServiceTest {
     }
 
     // -----------------------
-    // validateAdmin tests
+    // validateAdmin tests (service's validateAdmin reads ReactiveSecurityContextHolder)
     // -----------------------
     @Test
     void validateAdmin_AdminExists_ReturnsAdmin() {
@@ -550,10 +611,18 @@ class UserServiceTest {
 
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
 
-        // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
-                .expectNext(admin)
-                .verifyComplete();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
+
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.validateAdmin())
+                    .expectNext(admin)
+                    .verifyComplete();
+        }
     }
 
     @Test
@@ -565,12 +634,20 @@ class UserServiceTest {
 
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(client));
 
-        // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
-                .expectErrorMatches(throwable ->
-                        throwable instanceof ForbiddenException &&
-                                throwable.getMessage().contains("Only ADMIN can perform this action"))
-                .verify();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
+
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.validateAdmin())
+                    .expectErrorMatches(throwable ->
+                            throwable instanceof ForbiddenException &&
+                                    throwable.getMessage().contains("Only ADMIN can perform this action"))
+                    .verify();
+        }
     }
 
     @Test
@@ -578,21 +655,31 @@ class UserServiceTest {
         // Arrange
         when(userRepository.findById(actorAdminId)).thenReturn(Mono.empty());
 
-        // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
-                .expectErrorMatches(throwable ->
-                        throwable instanceof NotFoundException &&
-                                throwable.getMessage().contains("Actor not found"))
-                .verify();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
+        SecurityContextImpl secCtx = new SecurityContextImpl(auth);
+
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.just(secCtx));
+
+            // Act & Assert
+            StepVerifier.create(userService.validateAdmin())
+                    .expectErrorMatches(throwable ->
+                            throwable instanceof NotFoundException &&
+                                    throwable.getMessage().contains("Actor not found"))
+                    .verify();
+        }
     }
 
     @Test
-    void validateAdmin_NullActorId_ThrowsUnauthorized() {
-        StepVerifier.create(Mono.defer(() -> userService.validateAdmin(null)))
-                .expectErrorMatches(throwable ->
-                        throwable instanceof UnauthorizedException &&
-                                throwable.getMessage().contains("Actor ID is required")
-                )
-                .verify();
+    void validateAdmin_NoSecurityContext_ThrowsUnauthorized() {
+        try (MockedStatic<ReactiveSecurityContextHolder> mockedSec = Mockito.mockStatic(ReactiveSecurityContextHolder.class)) {
+            mockedSec.when(ReactiveSecurityContextHolder::getContext).thenReturn(Mono.empty());
+
+            StepVerifier.create(userService.validateAdmin())
+                    .expectErrorMatches(throwable ->
+                            throwable instanceof UnauthorizedException)
+                    .verify();
+        }
     }
-}*/
+}

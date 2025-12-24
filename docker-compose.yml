@@ -229,7 +229,7 @@ services:
 
   gateway:
     build:
-      context: ./gateway # можно поменять на ./gateway (запуск готовых jar)
+      context: . # можно поменять на ./gateway (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: gateway
