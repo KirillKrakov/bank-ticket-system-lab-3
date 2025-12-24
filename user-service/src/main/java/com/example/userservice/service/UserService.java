@@ -163,10 +163,6 @@ public class UserService {
         return userRepository.count();
     }
 
-    /**
-     * Validates that current authenticated actor exists and has ROLE_ADMIN.
-     * The principal is expected to be the user's UUID string (set by JwtAuthWebFilter).
-     */
     public Mono<User> validateAdmin() {
         return ReactiveSecurityContextHolder.getContext()
                 .switchIfEmpty(Mono.error(new UnauthorizedException("Unauthorized")))
