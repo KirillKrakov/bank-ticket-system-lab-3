@@ -1,19 +1,12 @@
-/*package com.example.productservice.service;
+package com.example.productservice.service;
 
 import com.example.productservice.dto.ProductDto;
 import com.example.productservice.dto.ProductRequest;
-import com.example.productservice.exception.BadRequestException;
-import com.example.productservice.exception.ConflictException;
-import com.example.productservice.exception.ForbiddenException;
-import com.example.productservice.exception.NotFoundException;
+import com.example.productservice.exception.*;
 import com.example.productservice.feign.ApplicationServiceClient;
 import com.example.productservice.feign.AssignmentServiceClient;
-import com.example.productservice.feign.UserServiceClient;
 import com.example.productservice.model.entity.Product;
-import com.example.productservice.model.enums.AssignmentRole;
-import com.example.productservice.model.enums.UserRole;
 import com.example.productservice.repository.ProductRepository;
-import com.example.productservice.service.ProductService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -21,6 +14,7 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.List;
 import java.util.Optional;
@@ -35,13 +29,13 @@ public class ProductServiceTest {
     private ProductRepository productRepository;
 
     @Mock
-    private UserServiceClient userServiceClient;
-
-    @Mock
     private ApplicationServiceClient applicationServiceClient;
 
     @Mock
     private AssignmentServiceClient assignmentServiceClient;
+
+    @Mock
+    private Jwt jwt;
 
     private ProductService productService;
 
@@ -50,7 +44,6 @@ public class ProductServiceTest {
         MockitoAnnotations.openMocks(this);
         productService = new ProductService(
                 productRepository,
-                userServiceClient,
                 applicationServiceClient,
                 assignmentServiceClient
         );
@@ -121,6 +114,29 @@ public class ProductServiceTest {
         verify(productRepository, times(1)).save(any(Product.class));
     }
 
+    @Test
+    public void create_trimmingNameAndDescription() {
+        ProductRequest req = new ProductRequest();
+        req.setName("  product  ");
+        req.setDescription("  desc  ");
+
+        Product saved = new Product();
+        UUID id = UUID.randomUUID();
+        saved.setId(id);
+        saved.setName("product");
+        saved.setDescription("desc");
+
+        when(productRepository.existsByName("product")).thenReturn(false);
+        when(productRepository.save(any(Product.class))).thenReturn(saved);
+
+        ProductDto resp = productService.create(req);
+
+        assertNotNull(resp);
+        assertEquals(id, resp.getId());
+        assertEquals("product", resp.getName());
+        assertEquals("desc", resp.getDescription());
+    }
+
     // -----------------------
     // list tests
     // -----------------------
@@ -146,6 +162,12 @@ public class ProductServiceTest {
         assertEquals(2, resp.getTotalElements());
         assertEquals("p1", resp.getContent().get(0).getName());
         verify(productRepository, times(1)).findAll(PageRequest.of(0, 10));
+    }
+
+    @Test
+    public void list_sizeExceeds50_throwsBadRequest() {
+        assertThrows(BadRequestException.class, () -> productService.list(0, 51));
+        verifyNoInteractions(productRepository);
     }
 
     // -----------------------
@@ -175,6 +197,7 @@ public class ProductServiceTest {
         assertNotNull(resp);
         assertEquals(id, resp.getId());
         assertEquals("name", resp.getName());
+        assertEquals("desc", resp.getDescription());
     }
 
     // -----------------------
@@ -182,8 +205,11 @@ public class ProductServiceTest {
     // -----------------------
     @Test
     public void updateProduct_nullRequest_throwsBadRequest() {
+        UUID productId = UUID.randomUUID();
+        UUID actorId = UUID.randomUUID();
+
         assertThrows(BadRequestException.class, () ->
-                productService.updateProduct(UUID.randomUUID(), null, UUID.randomUUID()));
+                productService.updateProduct(productId, null, actorId, jwt));
     }
 
     @Test
@@ -192,24 +218,8 @@ public class ProductServiceTest {
         ProductRequest req = new ProductRequest();
         req.setName("newName");
 
-        Exception exception = assertThrows(Exception.class, () ->
-                productService.updateProduct(productId, req, null));
-
-        assertTrue(exception.getMessage().contains("actorId"));
-    }
-
-    @Test
-    public void updateProduct_actorNotFound_throwsNotFoundException() {
-        UUID actorId = UUID.randomUUID();
-        UUID productId = UUID.randomUUID();
-        ProductRequest req = new ProductRequest();
-        req.setName("newName");
-
-        when(userServiceClient.userExists(actorId)).thenReturn(false);
-
-        assertThrows(NotFoundException.class, () ->
-                productService.updateProduct(productId, req, actorId));
-        verify(userServiceClient, times(2)).userExists(actorId);
+        assertThrows(UnauthorizedException.class, () ->
+                productService.updateProduct(productId, req, null, jwt));
     }
 
     @Test
@@ -219,11 +229,10 @@ public class ProductServiceTest {
         ProductRequest req = new ProductRequest();
         req.setName("newName");
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
         when(productRepository.findById(productId)).thenReturn(Optional.empty());
 
         assertThrows(NotFoundException.class, () ->
-                productService.updateProduct(productId, req, actorId));
+                productService.updateProduct(productId, req, actorId, jwt));
         verify(productRepository, times(1)).findById(productId);
     }
 
@@ -238,19 +247,39 @@ public class ProductServiceTest {
         product.setId(productId);
         product.setName("oldName");
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
+        // JWT не содержит роль ADMIN
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
 
         assertThrows(ForbiddenException.class, () ->
-                productService.updateProduct(productId, req, actorId));
+                productService.updateProduct(productId, req, actorId, jwt));
 
-        verify(userServiceClient, times(1)).getUserRole(actorId);
         verify(assignmentServiceClient, times(1)).existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name());
+                actorId, productId, "PRODUCT_OWNER");
+    }
+
+    @Test
+    public void updateProduct_assignmentServiceUnavailable_throwsServiceUnavailable() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        ProductRequest req = new ProductRequest();
+        req.setName("newName");
+
+        Product product = new Product();
+        product.setId(productId);
+        product.setName("oldName");
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(null); // Сервис недоступен
+
+        assertThrows(ServiceUnavailableException.class, () ->
+                productService.updateProduct(productId, req, actorId, jwt));
     }
 
     @Test
@@ -271,16 +300,16 @@ public class ProductServiceTest {
         saved.setName("newName");
         saved.setDescription("newDesc");
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        // JWT содержит роль ADMIN
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
         when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
         when(productRepository.existsByName("newName")).thenReturn(false);
         when(productRepository.save(any(Product.class))).thenReturn(saved);
 
-        ProductDto resp = productService.updateProduct(productId, req, actorId);
+        ProductDto resp = productService.updateProduct(productId, req, actorId, jwt);
 
         assertNotNull(resp);
         assertEquals("newName", resp.getName());
@@ -306,19 +335,20 @@ public class ProductServiceTest {
         saved.setName("ownerName");
         saved.setDescription("ownerDesc");
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
+        // JWT не содержит роль ADMIN, но пользователь является владельцем
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
         when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(true);
         when(productRepository.existsByName("ownerName")).thenReturn(false);
         when(productRepository.save(any(Product.class))).thenReturn(saved);
 
-        ProductDto resp = productService.updateProduct(productId, req, actorId);
+        ProductDto resp = productService.updateProduct(productId, req, actorId, jwt);
 
         assertNotNull(resp);
         assertEquals("ownerName", resp.getName());
+        assertEquals("ownerDesc", resp.getDescription());
         verify(productRepository, times(1)).save(any(Product.class));
     }
 
@@ -335,19 +365,118 @@ public class ProductServiceTest {
         existing.setName("oldName");
         existing.setDescription("oldDesc");
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        // JWT содержит роль ADMIN
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
         when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
         when(productRepository.existsByName("existingName")).thenReturn(true);
 
         assertThrows(ConflictException.class, () ->
-                productService.updateProduct(productId, req, actorId));
+                productService.updateProduct(productId, req, actorId, jwt));
 
         verify(productRepository, times(1)).existsByName("existingName");
         verify(productRepository, never()).save(any());
+    }
+
+    @Test
+    public void updateProduct_partialUpdate_onlyName() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        ProductRequest req = new ProductRequest();
+        req.setName("newName");
+        // description не установлен
+
+        Product existing = new Product();
+        existing.setId(productId);
+        existing.setName("oldName");
+        existing.setDescription("oldDesc");
+
+        Product saved = new Product();
+        saved.setId(productId);
+        saved.setName("newName");
+        saved.setDescription("oldDesc"); // description остался прежним
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
+        when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(false);
+        when(productRepository.existsByName("newName")).thenReturn(false);
+        when(productRepository.save(any(Product.class))).thenReturn(saved);
+
+        ProductDto resp = productService.updateProduct(productId, req, actorId, jwt);
+
+        assertNotNull(resp);
+        assertEquals("newName", resp.getName());
+        assertEquals("oldDesc", resp.getDescription());
+    }
+
+    @Test
+    public void updateProduct_partialUpdate_onlyDescription() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        ProductRequest req = new ProductRequest();
+        req.setDescription("newDesc");
+        // name не установлен
+
+        Product existing = new Product();
+        existing.setId(productId);
+        existing.setName("oldName");
+        existing.setDescription("oldDesc");
+
+        Product saved = new Product();
+        saved.setId(productId);
+        saved.setName("oldName"); // name остался прежним
+        saved.setDescription("newDesc");
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
+        when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(false);
+        when(productRepository.save(any(Product.class))).thenReturn(saved);
+
+        ProductDto resp = productService.updateProduct(productId, req, actorId, jwt);
+
+        assertNotNull(resp);
+        assertEquals("oldName", resp.getName());
+        assertEquals("newDesc", resp.getDescription());
+    }
+
+    @Test
+    public void updateProduct_sameName_noConflictCheck() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+        ProductRequest req = new ProductRequest();
+        req.setName("sameName");
+        req.setDescription("newDesc");
+
+        Product existing = new Product();
+        existing.setId(productId);
+        existing.setName("sameName");
+        existing.setDescription("oldDesc");
+
+        Product saved = new Product();
+        saved.setId(productId);
+        saved.setName("sameName");
+        saved.setDescription("newDesc");
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
+        when(productRepository.findById(productId)).thenReturn(Optional.of(existing));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(false);
+        // existsByName не должен вызываться, так как имя не изменилось
+        when(productRepository.save(any(Product.class))).thenReturn(saved);
+
+        ProductDto resp = productService.updateProduct(productId, req, actorId, jwt);
+
+        assertNotNull(resp);
+        assertEquals("sameName", resp.getName());
+        assertEquals("newDesc", resp.getDescription());
+        verify(productRepository, never()).existsByName(anyString());
     }
 
     // -----------------------
@@ -357,22 +486,8 @@ public class ProductServiceTest {
     public void deleteProduct_nullActorId_throwsUnauthorized() {
         UUID productId = UUID.randomUUID();
 
-        Exception exception = assertThrows(Exception.class, () ->
-                productService.deleteProduct(productId, null));
-
-        assertTrue(exception.getMessage().contains("actorId"));
-    }
-
-    @Test
-    public void deleteProduct_actorNotFound_throwsNotFoundException() {
-        UUID actorId = UUID.randomUUID();
-        UUID productId = UUID.randomUUID();
-
-        when(userServiceClient.userExists(actorId)).thenReturn(false);
-
-        assertThrows(NotFoundException.class, () ->
-                productService.deleteProduct(productId, actorId));
-        verify(userServiceClient, times(2)).userExists(actorId);
+        assertThrows(UnauthorizedException.class, () ->
+                productService.deleteProduct(productId, null, jwt));
     }
 
     @Test
@@ -380,11 +495,10 @@ public class ProductServiceTest {
         UUID actorId = UUID.randomUUID();
         UUID productId = UUID.randomUUID();
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
         when(productRepository.findById(productId)).thenReturn(Optional.empty());
 
         assertThrows(NotFoundException.class, () ->
-                productService.deleteProduct(productId, actorId));
+                productService.deleteProduct(productId, actorId, jwt));
         verify(productRepository, times(1)).findById(productId);
     }
 
@@ -396,18 +510,36 @@ public class ProductServiceTest {
         Product product = new Product();
         product.setId(productId);
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
+        // JWT не содержит роль ADMIN
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
 
         assertThrows(ForbiddenException.class, () ->
-                productService.deleteProduct(productId, actorId));
+                productService.deleteProduct(productId, actorId, jwt));
 
         verify(assignmentServiceClient, times(1)).existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name());
+                actorId, productId, "PRODUCT_OWNER");
+    }
+
+    @Test
+    public void deleteProduct_assignmentServiceUnavailable_throwsServiceUnavailable() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+
+        Product product = new Product();
+        product.setId(productId);
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(null); // Сервис недоступен
+
+        assertThrows(ServiceUnavailableException.class, () ->
+                productService.deleteProduct(productId, actorId, jwt));
     }
 
     @Test
@@ -418,14 +550,14 @@ public class ProductServiceTest {
         Product product = new Product();
         product.setId(productId);
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        // JWT содержит роль ADMIN
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
 
-        productService.deleteProduct(productId, actorId);
+        productService.deleteProduct(productId, actorId, jwt);
 
         // Проверяем вызовы к внешним сервисам
         verify(applicationServiceClient, times(1)).deleteApplicationsByProductId(productId);
@@ -433,27 +565,93 @@ public class ProductServiceTest {
     }
 
     @Test
-    public void deleteProduct_applicationServiceThrows_exceptionWrappedAsConflict() {
+    public void deleteProduct_asOwner_success_deletesApplicationsAndProduct() {
         UUID actorId = UUID.randomUUID();
         UUID productId = UUID.randomUUID();
 
         Product product = new Product();
         product.setId(productId);
 
-        when(userServiceClient.userExists(actorId)).thenReturn(true);
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        // JWT не содержит роль ADMIN, но пользователь является владельцем
+        when(jwt.getClaims()).thenReturn(java.util.Map.of());
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
         when(assignmentServiceClient.existsByUserAndProductAndRole(
-                actorId, productId, AssignmentRole.PRODUCT_OWNER.name()))
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(true);
+
+        productService.deleteProduct(productId, actorId, jwt);
+
+        verify(applicationServiceClient, times(1)).deleteApplicationsByProductId(productId);
+        verify(productRepository, times(1)).delete(product);
+    }
+
+    @Test
+    public void deleteProduct_applicationServiceUnavailable_throwsServiceUnavailable() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+
+        Product product = new Product();
+        product.setId(productId);
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
                 .thenReturn(false);
 
-        // Симулируем ошибку при вызове Feign-клиента
-        doThrow(new RuntimeException("Feign error")).when(applicationServiceClient)
+        // Симулируем ошибку сервиса приложений
+        doThrow(ServiceUnavailableException.class).when(applicationServiceClient)
                 .deleteApplicationsByProductId(productId);
 
-        // В текущей реализации ProductService оборачивает исключение в ConflictException
+        assertThrows(ServiceUnavailableException.class, () ->
+                productService.deleteProduct(productId, actorId, jwt));
+    }
+
+    @Test
+    public void deleteProduct_generalException_throwsConflict() {
+        UUID actorId = UUID.randomUUID();
+        UUID productId = UUID.randomUUID();
+
+        Product product = new Product();
+        product.setId(productId);
+
+        when(jwt.getClaims()).thenReturn(java.util.Map.of("role", "ROLE_ADMIN"));
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(assignmentServiceClient.existsByUserAndProductAndRole(
+                actorId, productId, "PRODUCT_OWNER"))
+                .thenReturn(false);
+
+        // Симулируем общее исключение при вызове Feign-клиента
+        doThrow(new RuntimeException("General error")).when(applicationServiceClient)
+                .deleteApplicationsByProductId(productId);
+
         assertThrows(ConflictException.class, () ->
-                productService.deleteProduct(productId, actorId));
+                productService.deleteProduct(productId, actorId, jwt));
+    }
+
+    // -----------------------
+    // findById tests
+    // -----------------------
+    @Test
+    public void findById_whenFound_returnsOptional() {
+        UUID id = UUID.randomUUID();
+        Product product = new Product();
+        product.setId(id);
+
+        when(productRepository.findById(id)).thenReturn(Optional.of(product));
+
+        Optional<Product> result = productService.findById(id);
+        assertTrue(result.isPresent());
+        assertEquals(id, result.get().getId());
+    }
+
+    @Test
+    public void findById_whenNotFound_returnsEmptyOptional() {
+        UUID id = UUID.randomUUID();
+        when(productRepository.findById(id)).thenReturn(Optional.empty());
+
+        Optional<Product> result = productService.findById(id);
+        assertFalse(result.isPresent());
     }
 
     // -----------------------
@@ -476,4 +674,26 @@ public class ProductServiceTest {
         assertFalse(productService.existsById(id));
         verify(productRepository, times(1)).existsById(id);
     }
-}*/
+
+    // -----------------------
+    // toDto tests (через public методы)
+    // -----------------------
+    @Test
+    public void toDto_mapsAllFieldsCorrectly() {
+        Product product = new Product();
+        UUID id = UUID.randomUUID();
+        product.setId(id);
+        product.setName("Test Product");
+        product.setDescription("Test Description");
+
+        // Используем метод get, который внутри вызывает toDto
+        when(productRepository.findById(id)).thenReturn(Optional.of(product));
+
+        ProductDto dto = productService.get(id);
+
+        assertNotNull(dto);
+        assertEquals(id, dto.getId());
+        assertEquals("Test Product", dto.getName());
+        assertEquals("Test Description", dto.getDescription());
+    }
+}

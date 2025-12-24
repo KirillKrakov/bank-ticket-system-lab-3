@@ -1,34 +1,36 @@
-/*package com.example.userservice.service;
+package com.example.userservice.service;
 
-import com.example.userservice.dto.UserDto;
 import com.example.userservice.dto.UserRequest;
 import com.example.userservice.exception.*;
 import com.example.userservice.feign.ApplicationServiceClient;
 import com.example.userservice.model.entity.User;
 import com.example.userservice.model.enums.UserRole;
 import com.example.userservice.repository.UserRepository;
-import com.example.userservice.service.UserService;
-import com.password4j.Hash;
-import com.password4j.HashBuilder;
-import com.password4j.Password;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextImpl;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
+import reactor.util.context.Context;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -40,15 +42,51 @@ class UserServiceTest {
     @Mock
     private ApplicationServiceClient applicationServiceClient;
 
+    @Spy
+    private PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+
     @InjectMocks
     private UserService userService;
 
     private final UUID testUserId = UUID.randomUUID();
     private final UUID actorAdminId = UUID.randomUUID();
+    private final String adminUsername = "adminUser";
+    private final String clientUsername = "clientUser";
 
     @BeforeEach
     void setUp() {
-        userService = new UserService(userRepository, applicationServiceClient);
+        userService = new UserService(userRepository, applicationServiceClient, passwordEncoder);
+    }
+
+    // Вспомогательный метод для тестирования с SecurityContext
+    private <T> Mono<T> withAdminContext(Mono<T> testMono) {
+        Authentication auth = new UsernamePasswordAuthenticationToken(
+                adminUsername, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+        SecurityContext context = new SecurityContextImpl(auth);
+        return Mono.just(context)
+                .flatMap(ctx -> testMono.contextWrite(
+                        org.springframework.security.core.context.ReactiveSecurityContextHolder.withSecurityContext(Mono.just(ctx))
+                ));
+    }
+
+    private <T> Mono<T> withClientContext(Mono<T> testMono) {
+        Authentication auth = new UsernamePasswordAuthenticationToken(
+                clientUsername, null, List.of(new SimpleGrantedAuthority("ROLE_CLIENT")));
+        SecurityContext context = new SecurityContextImpl(auth);
+        return Mono.just(context)
+                .flatMap(ctx -> testMono.contextWrite(
+                        org.springframework.security.core.context.ReactiveSecurityContextHolder.withSecurityContext(Mono.just(ctx))
+                ));
+    }
+
+    private <T> Mono<T> withInvalidPrincipalContext(Mono<T> testMono) {
+        Authentication auth = new UsernamePasswordAuthenticationToken(
+                12345, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))); // Principal = число
+        SecurityContext context = new SecurityContextImpl(auth);
+        return Mono.just(context)
+                .flatMap(ctx -> testMono.contextWrite(
+                        org.springframework.security.core.context.ReactiveSecurityContextHolder.withSecurityContext(Mono.just(ctx))
+                ));
     }
 
     // -----------------------
@@ -74,30 +112,21 @@ class UserServiceTest {
         when(userRepository.existsByEmail("alice@example.com")).thenReturn(Mono.just(false));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(savedUser));
 
-        try (MockedStatic<Password> mockedStatic = Mockito.mockStatic(Password.class)) {
-            HashBuilder mockHashBuilder = mock(HashBuilder.class);
-            Hash mockHash = mock(Hash.class);
+        // Act & Assert
+        StepVerifier.create(userService.create(req))
+                .expectNextMatches(dto -> {
+                    assertEquals(testUserId, dto.getId());
+                    assertEquals("alice", dto.getUsername());
+                    assertEquals("alice@example.com", dto.getEmail());
+                    assertEquals(UserRole.ROLE_CLIENT, dto.getRole());
+                    return true;
+                })
+                .verifyComplete();
 
-            when(mockHash.getResult()).thenReturn("encodedPassword");
-            when(mockHashBuilder.withBcrypt()).thenReturn(mockHash);
-            mockedStatic.when(() -> Password.hash("StrongPass123")).thenReturn(mockHashBuilder);
-
-            // Act & Assert
-            StepVerifier.create(userService.create(req))
-                    .expectNextMatches(dto -> {
-                        assertEquals(testUserId, dto.getId());
-                        assertEquals("alice", dto.getUsername());
-                        assertEquals("alice@example.com", dto.getEmail());
-                        assertEquals(UserRole.ROLE_CLIENT, dto.getRole());
-                        return true;
-                    })
-                    .verifyComplete();
-
-            mockedStatic.verify(() -> Password.hash("StrongPass123"));
-            verify(userRepository).existsByUsername("alice");
-            verify(userRepository).existsByEmail("alice@example.com");
-            verify(userRepository).save(any(User.class));
-        }
+        verify(userRepository).existsByUsername("alice");
+        verify(userRepository).existsByEmail("alice@example.com");
+        verify(userRepository).save(any(User.class));
+        verify(passwordEncoder).encode("StrongPass123");
     }
 
     @Test
@@ -260,9 +289,10 @@ class UserServiceTest {
     @Test
     void update_Success_UpdatesUser() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User existingUser = new User();
         existingUser.setId(testUserId);
@@ -285,55 +315,48 @@ class UserServiceTest {
         req.setEmail("new@example.com");
         req.setPassword("newPass123");
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(existingUser));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(updatedUser));
 
-        try (MockedStatic<Password> mockedStatic = Mockito.mockStatic(Password.class)) {
-            HashBuilder mockHashBuilder = mock(HashBuilder.class);
-            Hash mockHash = mock(Hash.class);
+        // Act & Assert
+        StepVerifier.create(withAdminContext(userService.update(testUserId, req)))
+                .expectNextMatches(dto -> {
+                    assertEquals(testUserId, dto.getId());
+                    assertEquals("new", dto.getUsername());
+                    assertEquals("new@example.com", dto.getEmail());
+                    return true;
+                })
+                .verifyComplete();
 
-            when(mockHash.getResult()).thenReturn("newHash");
-            when(mockHashBuilder.withBcrypt()).thenReturn(mockHash);
-            mockedStatic.when(() -> Password.hash("newPass123")).thenReturn(mockHashBuilder);
-
-            // Act & Assert
-            StepVerifier.create(userService.update(testUserId, actorAdminId, req))
-                    .expectNextMatches(dto -> {
-                        assertEquals(testUserId, dto.getId());
-                        assertEquals("new", dto.getUsername());
-                        assertEquals("new@example.com", dto.getEmail());
-                        return true;
-                    })
-                    .verifyComplete();
-
-            verify(userRepository).findById(actorAdminId);
-            verify(userRepository).findById(testUserId);
-            verify(userRepository).save(any(User.class));
-        }
+        verify(userRepository).findByUsername(adminUsername);
+        verify(userRepository).findById(testUserId);
+        verify(userRepository).save(any(User.class));
+        verify(passwordEncoder).encode("newPass123");
     }
 
     @Test
     void update_UserNotFound_ThrowsNotFound() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.empty());
 
         UserRequest req = new UserRequest();
         req.setUsername("new");
 
         // Act & Assert
-        StepVerifier.create(userService.update(testUserId, actorAdminId, req))
+        StepVerifier.create(withAdminContext(userService.update(testUserId, req)))
                 .expectErrorMatches(throwable ->
                         throwable instanceof NotFoundException &&
                                 throwable.getMessage().contains("User not found"))
                 .verify();
 
-        verify(userRepository).findById(actorAdminId);
+        verify(userRepository).findByUsername(adminUsername);
         verify(userRepository).findById(testUserId);
         verify(userRepository, never()).save(any());
     }
@@ -341,25 +364,31 @@ class UserServiceTest {
     @Test
     void update_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User nonAdmin = new User();
-        nonAdmin.setId(actorAdminId);
-        nonAdmin.setRole(UserRole.ROLE_CLIENT);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User testUser = new User();
-        testUser.setId(testUserId);
-        testUser.setRole(UserRole.ROLE_CLIENT);
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(nonAdmin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(testUser));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.update(testUserId, actorAdminId, new UserRequest()))
+        StepVerifier.create(withClientContext(userService.update(testUserId, new UserRequest())))
                 .expectErrorMatches(throwable ->
                         throwable instanceof ForbiddenException &&
                                 throwable.getMessage().contains("Only ADMIN can perform this action"))
                 .verify();
 
-        verify(userRepository).findById(actorAdminId);
+        verify(userRepository).findByUsername(clientUsername);
+    }
+
+    @Test
+    void update_NoSecurityContext_ThrowsUnauthorized() {
+        // Act & Assert
+        StepVerifier.create(userService.update(testUserId, new UserRequest()))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof UnauthorizedException &&
+                                throwable.getMessage().contains("Unauthorized"))
+                .verify();
     }
 
     // -----------------------
@@ -368,24 +397,27 @@ class UserServiceTest {
     @Test
     void delete_Success_DeletesUserAndApplications() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User userToDelete = new User();
         userToDelete.setId(testUserId);
         userToDelete.setUsername("toDelete");
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(userToDelete));
 
-        // Если метод void
+        // Если метод void - используем doNothing()
         doNothing().when(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
+
+        // ИЛИ если метод возвращает что-то другое - мокаем соответствующий возвращаемый тип
 
         when(userRepository.delete(userToDelete)).thenReturn(Mono.empty());
 
         // Act & Assert
-        StepVerifier.create(userService.delete(testUserId, actorAdminId))
+        StepVerifier.create(withAdminContext(userService.delete(testUserId)))
                 .verifyComplete();
 
         verify(applicationServiceClient).deleteApplicationsByUserId(testUserId.toString());
@@ -393,30 +425,24 @@ class UserServiceTest {
     }
 
     @Test
-    void delete_ApplicationServiceFails_ContinuesUserDeletion() {
+    void delete_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User userToDelete = new User();
-        userToDelete.setId(testUserId);
-        userToDelete.setUsername("toDelete");
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(userToDelete));
-
-        // Feign клиент бросает исключение
-        when(applicationServiceClient.deleteApplicationsByUserId(testUserId.toString()))
-                .thenThrow(new RuntimeException("Service unavailable"));
-
-        when(userRepository.delete(userToDelete)).thenReturn(Mono.empty());
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.delete(testUserId, actorAdminId))
-                .verifyError();
+        StepVerifier.create(withClientContext(userService.delete(testUserId)))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof ForbiddenException &&
+                                throwable.getMessage().contains("Only ADMIN can perform this action"))
+                .verify();
 
-        verify(userRepository).delete(userToDelete);
+        verify(userRepository).findByUsername(clientUsername);
+        verify(userRepository, never()).delete(any());
     }
 
     // -----------------------
@@ -425,9 +451,10 @@ class UserServiceTest {
     @Test
     void promoteToManager_Success_PromotesClientToManager() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User client = new User();
         client.setId(testUserId);
@@ -437,12 +464,12 @@ class UserServiceTest {
         promotedUser.setId(testUserId);
         promotedUser.setRole(UserRole.ROLE_MANAGER);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(client));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(promotedUser));
 
         // Act & Assert
-        StepVerifier.create(userService.promoteToManager(testUserId, actorAdminId))
+        StepVerifier.create(withAdminContext(userService.promoteToManager(testUserId)))
                 .verifyComplete();
 
         verify(userRepository).save(argThat(user ->
@@ -450,24 +477,24 @@ class UserServiceTest {
     }
 
     @Test
-    void promoteToManager_AlreadyManager_DoesNothing() {
+    void promoteToManager_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User manager = new User();
-        manager.setId(testUserId);
-        manager.setRole(UserRole.ROLE_MANAGER);
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.promoteToManager(testUserId, actorAdminId))
-                .verifyComplete();
+        StepVerifier.create(withClientContext(userService.promoteToManager(testUserId)))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof ForbiddenException &&
+                                throwable.getMessage().contains("Only ADMIN can perform this action"))
+                .verify();
 
-        verify(userRepository, never()).save(any());
+        verify(userRepository).findByUsername(clientUsername);
+        verify(userRepository, never()).findById((UUID) any());
     }
 
     // -----------------------
@@ -476,9 +503,10 @@ class UserServiceTest {
     @Test
     void demoteToClient_Success_DemotesManagerToClient() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User manager = new User();
         manager.setId(testUserId);
@@ -488,12 +516,12 @@ class UserServiceTest {
         demotedUser.setId(testUserId);
         demotedUser.setRole(UserRole.ROLE_CLIENT);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(demotedUser));
 
         // Act & Assert
-        StepVerifier.create(userService.demoteToClient(testUserId, actorAdminId))
+        StepVerifier.create(withAdminContext(userService.demoteToClient(testUserId)))
                 .verifyComplete();
 
         verify(userRepository).save(argThat(user ->
@@ -501,72 +529,57 @@ class UserServiceTest {
     }
 
     @Test
-    void demoteToClient_AlreadyClient_DoesNothing() {
+    void demoteToClient_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User client = new User();
-        client.setId(testUserId);
-        client.setRole(UserRole.ROLE_CLIENT);
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(client));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.demoteToClient(testUserId, actorAdminId))
-                .verifyComplete();
+        StepVerifier.create(withClientContext(userService.demoteToClient(testUserId)))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof ForbiddenException &&
+                                throwable.getMessage().contains("Only ADMIN can perform this action"))
+                .verify();
 
-        verify(userRepository, never()).save(any());
+        verify(userRepository).findByUsername(clientUsername);
+        verify(userRepository, never()).findById(any(UUID.class));
     }
 
     // -----------------------
-    // count tests
-    // -----------------------
-    @Test
-    void count_ReturnsUserCount() {
-        // Arrange
-        long userCount = 42L;
-        when(userRepository.count()).thenReturn(Mono.just(userCount));
-
-        // Act & Assert
-        StepVerifier.create(userService.count())
-                .expectNext(userCount)
-                .verifyComplete();
-
-        verify(userRepository).count();
-    }
-
-    // -----------------------
-    // validateAdmin tests
+    // validateAdmin tests (теперь приватный метод)
     // -----------------------
     @Test
     void validateAdmin_AdminExists_ReturnsAdmin() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
 
         // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
-                .expectNext(admin)
+        StepVerifier.create(withAdminContext(userService.validateAdmin()))
+                .expectNext(adminUser)
                 .verifyComplete();
     }
 
     @Test
     void validateAdmin_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User client = new User();
-        client.setId(actorAdminId);
-        client.setRole(UserRole.ROLE_CLIENT);
+        User clientUser = new User();
+        clientUser.setId(actorAdminId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(client));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
+        StepVerifier.create(withClientContext(userService.validateAdmin()))
                 .expectErrorMatches(throwable ->
                         throwable instanceof ForbiddenException &&
                                 throwable.getMessage().contains("Only ADMIN can perform this action"))
@@ -576,23 +589,37 @@ class UserServiceTest {
     @Test
     void validateAdmin_UserNotFound_ThrowsNotFound() {
         // Arrange
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.empty());
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.empty());
 
         // Act & Assert
-        StepVerifier.create(userService.validateAdmin(actorAdminId))
+        StepVerifier.create(withAdminContext(userService.validateAdmin()))
                 .expectErrorMatches(throwable ->
                         throwable instanceof NotFoundException &&
-                                throwable.getMessage().contains("Actor not found"))
+                                throwable.getMessage().contains("User not found: " + adminUsername))
                 .verify();
     }
 
     @Test
-    void validateAdmin_NullActorId_ThrowsUnauthorized() {
-        StepVerifier.create(Mono.defer(() -> userService.validateAdmin(null)))
+    void validateAdmin_NoSecurityContext_ThrowsUnauthorized() {
+        // Act & Assert
+        StepVerifier.create(userService.validateAdmin())
                 .expectErrorMatches(throwable ->
                         throwable instanceof UnauthorizedException &&
-                                throwable.getMessage().contains("Actor ID is required")
-                )
+                                throwable.getMessage().contains("Unauthorized"))
                 .verify();
     }
-}*/
+
+    @Test
+    void validateAdmin_InvalidPrincipal_ThrowsUnauthorized() {
+        when(userRepository.findByUsername("12345")).thenReturn(Mono.empty());
+
+        // Act & Assert
+        StepVerifier.create(withInvalidPrincipalContext(userService.validateAdmin()))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof NotFoundException &&
+                                throwable.getMessage().contains("User not found"))
+                .verify();
+
+        verify(userRepository).findByUsername("12345");
+    }
+}
