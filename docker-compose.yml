@@ -10,6 +10,11 @@ services:
       - "8761:8761"
     networks:
       - bank-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8761/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   config-server:
     build:
@@ -20,8 +25,16 @@ services:
         JAR_NAME: config-server-1.0.0.jar
     ports:
       - "8888:8888"
+    depends_on:
+      service-discovery:
+        condition: service_healthy
     networks:
       - bank-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8888/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   postgres-user:
     image: postgres:17
@@ -59,9 +72,9 @@ services:
       postgres-user:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -100,9 +113,9 @@ services:
       postgres-product:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -139,9 +152,9 @@ services:
       postgres-assignment:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -180,9 +193,9 @@ services:
       postgres-app:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -221,9 +234,9 @@ services:
       postgres-tag:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -241,9 +254,9 @@ services:
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
     depends_on:
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
