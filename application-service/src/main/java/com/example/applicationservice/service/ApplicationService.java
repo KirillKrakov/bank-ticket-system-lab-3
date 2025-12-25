@@ -92,7 +92,6 @@ public class ApplicationService {
                     if (!userExists) {
                         return Mono.error(new NotFoundException("Applicant with this ID not found"));
                     }
-                    // verify product exists
                     return Mono.fromCallable(() -> {
                         try {
                             return productServiceClient.productExists(productId);

@@ -15,7 +15,7 @@ public class AuthenticationManager implements ReactiveAuthenticationManager {
     private final PasswordEncoder passwordEncoder;
 
     public AuthenticationManager(UserDetailsService userDetailsService,
-                                               PasswordEncoder passwordEncoder) {
+                                 PasswordEncoder passwordEncoder) {
         this.userDetailsService = userDetailsService;
         this.passwordEncoder = passwordEncoder;
     }

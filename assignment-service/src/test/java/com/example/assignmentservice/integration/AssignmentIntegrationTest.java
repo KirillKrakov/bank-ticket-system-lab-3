@@ -1,4 +1,4 @@
-/*package com.example.assignmentservice.integration;
+package com.example.assignmentservice.integration;
 
 import com.example.assignmentservice.AssignmentServiceApplication;
 import com.example.assignmentservice.dto.UserProductAssignmentDto;
@@ -7,8 +7,10 @@ import com.example.assignmentservice.feign.ProductServiceClient;
 import com.example.assignmentservice.feign.UserServiceClient;
 import com.example.assignmentservice.model.entity.UserProductAssignment;
 import com.example.assignmentservice.model.enums.AssignmentRole;
-import com.example.assignmentservice.model.enums.UserRole;
 import com.example.assignmentservice.repository.UserProductAssignmentRepository;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,9 +25,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.time.Instant;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -37,6 +40,9 @@ import static org.springframework.boot.test.context.SpringBootTest.WebEnvironmen
 @ActiveProfiles("test")
 @SpringBootTest(webEnvironment = RANDOM_PORT, classes = AssignmentServiceApplication.class)
 public class AssignmentIntegrationTest {
+
+    // Keep secret length >= 32 bytes for HMAC-SHA256
+    private static final String SECRET = "test-secret-very-long-string-at-least-32-bytes-123456";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17-alpine")
@@ -56,6 +62,8 @@ public class AssignmentIntegrationTest {
         registry.add("spring.cloud.config.enabled", () -> "false");
         registry.add("feign.client.config.default.connectTimeout", () -> "5000");
         registry.add("feign.client.config.default.readTimeout", () -> "5000");
+        // jwt secret for the application under test
+        registry.add("jwt.secret", () -> SECRET);
     }
 
     @Autowired
@@ -85,23 +93,16 @@ public class AssignmentIntegrationTest {
     }
 
     private void setupMocks() {
-        // Мок для ADMIN пользователя
-        when(userServiceClient.getUserRole(adminUserId)).thenReturn(UserRole.ROLE_ADMIN);
+        // Only userExists and productExists are required now
+
         when(userServiceClient.userExists(adminUserId)).thenReturn(true);
-
-        // Мок для обычного пользователя
-        when(userServiceClient.getUserRole(regularUserId)).thenReturn(UserRole.ROLE_CLIENT);
         when(userServiceClient.userExists(regularUserId)).thenReturn(true);
-
-        // Мок для владельца продукта
-        when(userServiceClient.getUserRole(productOwnerUserId)).thenReturn(UserRole.ROLE_CLIENT);
         when(userServiceClient.userExists(productOwnerUserId)).thenReturn(true);
 
-        // Мок для существования продуктов
         when(productServiceClient.productExists(productId)).thenReturn(true);
         when(productServiceClient.productExists(anotherProductId)).thenReturn(true);
 
-        // Мок для несуществующих сущностей
+        // Generic fallback: return true for known ids, false otherwise
         when(userServiceClient.userExists(any(UUID.class))).thenAnswer(invocation -> {
             UUID id = invocation.getArgument(0);
             return id.equals(adminUserId) || id.equals(regularUserId) || id.equals(productOwnerUserId);
@@ -113,26 +114,48 @@ public class AssignmentIntegrationTest {
         });
     }
 
+    // helper — generate JWT token with uid and role claims
+    private String generateToken(UUID uid, String role) {
+        Key key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        Date now = Date.from(Instant.now());
+        Date exp = Date.from(Instant.now().plusSeconds(3600));
+        return Jwts.builder()
+                .setSubject(uid.toString())
+                .claim("uid", uid.toString())
+                .claim("role", role)
+                .setIssuedAt(now)
+                .setExpiration(exp)
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    private HttpHeaders headersWithToken(UUID uid, String role) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+        String token = generateToken(uid, role);
+        headers.setBearerAuth(token);
+        return headers;
+    }
+
     @Test
     void createAssignment_asAdmin_shouldReturnCreated() {
-        // Сначала создаем assignment через owner, чтобы потом admin мог управлять
-        createAssignmentAsOwner();
+        // prepare header for admin
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
 
+        // Create request
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(regularUserId);
         request.setProductId(productId);
         request.setRole(AssignmentRole.PRODUCT_OWNER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                adminUserId
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
@@ -149,7 +172,7 @@ public class AssignmentIntegrationTest {
 
     @Test
     void createAssignment_asProductOwner_shouldReturnCreated() {
-        // Сначала владелец создает себе продукт
+        // Insert existing PRODUCT_OWNER record for productOwnerUserId
         UserProductAssignment existing = new UserProductAssignment();
         existing.setId(UUID.randomUUID());
         existing.setUserId(productOwnerUserId);
@@ -158,22 +181,21 @@ public class AssignmentIntegrationTest {
         existing.setAssignedAt(Instant.now());
         assignmentRepository.save(existing);
 
-        // Теперь владелец может назначать других
+        // product owner token (role in token can be ROLE_CLIENT; service checks repo for ownership)
+        HttpHeaders headers = headersWithToken(productOwnerUserId, "ROLE_CLIENT");
+
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(regularUserId);
         request.setProductId(productId);
         request.setRole(AssignmentRole.VIEWER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                productOwnerUserId
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
@@ -185,21 +207,20 @@ public class AssignmentIntegrationTest {
 
     @Test
     void createAssignment_withoutRights_shouldReturnForbidden() {
+        HttpHeaders headers = headersWithToken(regularUserId, "ROLE_CLIENT");
+
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(regularUserId);
         request.setProductId(productId);
         request.setRole(AssignmentRole.PRODUCT_OWNER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                regularUserId // Обычный пользователь без прав
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
@@ -210,21 +231,20 @@ public class AssignmentIntegrationTest {
         UUID nonExistingUserId = UUID.randomUUID();
         when(userServiceClient.userExists(nonExistingUserId)).thenReturn(false);
 
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(nonExistingUserId);
         request.setProductId(productId);
         request.setRole(AssignmentRole.PRODUCT_OWNER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                adminUserId
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
@@ -235,21 +255,20 @@ public class AssignmentIntegrationTest {
         UUID nonExistingProductId = UUID.randomUUID();
         when(productServiceClient.productExists(nonExistingProductId)).thenReturn(false);
 
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(regularUserId);
         request.setProductId(nonExistingProductId);
         request.setRole(AssignmentRole.PRODUCT_OWNER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                adminUserId
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
@@ -257,11 +276,15 @@ public class AssignmentIntegrationTest {
 
     @Test
     void listAssignments_all_shouldReturnAll() {
-        // Создаем несколько назначений
         createTestAssignments();
 
-        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.getForEntity(
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.exchange(
                 "/api/v1/assignments",
+                HttpMethod.GET,
+                entity,
                 UserProductAssignmentDto[].class
         );
 
@@ -272,11 +295,15 @@ public class AssignmentIntegrationTest {
 
     @Test
     void listAssignments_byUserId_shouldReturnFiltered() {
-        // Создаем несколько назначений
         createTestAssignments();
 
-        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.getForEntity(
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.exchange(
                 "/api/v1/assignments?userId={userId}",
+                HttpMethod.GET,
+                entity,
                 UserProductAssignmentDto[].class,
                 regularUserId
         );
@@ -284,8 +311,6 @@ public class AssignmentIntegrationTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals(2, response.getBody().length);
-
-        // Проверяем, что все назначения для нужного пользователя
         for (UserProductAssignmentDto dto : response.getBody()) {
             assertEquals(regularUserId, dto.getUserId());
         }
@@ -293,11 +318,15 @@ public class AssignmentIntegrationTest {
 
     @Test
     void listAssignments_byProductId_shouldReturnFiltered() {
-        // Создаем несколько назначений
         createTestAssignments();
 
-        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.getForEntity(
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.exchange(
                 "/api/v1/assignments?productId={productId}",
+                HttpMethod.GET,
+                entity,
                 UserProductAssignmentDto[].class,
                 productId
         );
@@ -305,8 +334,6 @@ public class AssignmentIntegrationTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertNotNull(response.getBody());
         assertEquals(2, response.getBody().length);
-
-        // Проверяем, что все назначения для нужного продукта
         for (UserProductAssignmentDto dto : response.getBody()) {
             assertEquals(productId, dto.getProductId());
         }
@@ -314,8 +341,13 @@ public class AssignmentIntegrationTest {
 
     @Test
     void listAssignments_empty_shouldReturnEmptyList() {
-        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.getForEntity(
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        ResponseEntity<UserProductAssignmentDto[]> response = restTemplate.exchange(
                 "/api/v1/assignments",
+                HttpMethod.GET,
+                entity,
                 UserProductAssignmentDto[].class
         );
 
@@ -326,7 +358,6 @@ public class AssignmentIntegrationTest {
 
     @Test
     void existsEndpoint_withValidRole_shouldReturnTrue() {
-        // Создаем назначение
         UserProductAssignment assignment = new UserProductAssignment();
         assignment.setId(UUID.randomUUID());
         assignment.setUserId(regularUserId);
@@ -372,15 +403,17 @@ public class AssignmentIntegrationTest {
 
     @Test
     void deleteAssignments_asAdmin_deleteByUserAndProduct_shouldReturnNoContent() {
-        // Создаем назначение для удаления
         createAssignmentAsOwner();
 
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}&userId={userId}&productId={productId}",
+                "/api/v1/assignments?userId={userId}&productId={productId}",
                 HttpMethod.DELETE,
-                null,
+                entity,
                 Void.class,
-                adminUserId, productOwnerUserId, productId
+                productOwnerUserId, productId
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -389,18 +422,17 @@ public class AssignmentIntegrationTest {
 
     @Test
     void deleteAssignments_asAdmin_deleteAllUserAssignments_shouldReturnNoContent() {
-        // Создаем несколько назначений для пользователя
         createTestAssignments();
 
-        List<UserProductAssignment> userAssignments = assignmentRepository.findByUserId(regularUserId);
-        long beforeCount = userAssignments.stream().count();
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}&userId={userId}",
+                "/api/v1/assignments?userId={userId}",
                 HttpMethod.DELETE,
-                null,
+                entity,
                 Void.class,
-                adminUserId, regularUserId
+                regularUserId
         );
 
         List<UserProductAssignment> userAssignmentsAfter = assignmentRepository.findByUserId(regularUserId);
@@ -408,23 +440,21 @@ public class AssignmentIntegrationTest {
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
         assertEquals(0, afterCount);
-        assertTrue(beforeCount > 0);
     }
 
     @Test
     void deleteAssignments_asAdmin_deleteAllProductAssignments_shouldReturnNoContent() {
-        // Создаем несколько назначений для продукта
         createTestAssignments();
 
-        List<UserProductAssignment> productAssignments = assignmentRepository.findByProductId(productId);
-        long beforeCount = productAssignments.stream().count();
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}&productId={productId}",
+                "/api/v1/assignments?productId={productId}",
                 HttpMethod.DELETE,
-                null,
+                entity,
                 Void.class,
-                adminUserId, productId
+                productId
         );
 
         List<UserProductAssignment> productAssignmentsAfter = assignmentRepository.findByProductId(productId);
@@ -432,22 +462,22 @@ public class AssignmentIntegrationTest {
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
         assertEquals(0, afterCount);
-        assertTrue(beforeCount > 0);
     }
 
     @Test
     void deleteAssignments_asAdmin_deleteAll_shouldReturnNoContent() {
-        // Создаем несколько назначений
         createTestAssignments();
+
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
 
         long beforeCount = assignmentRepository.count();
 
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.DELETE,
-                null,
-                Void.class,
-                adminUserId
+                entity,
+                Void.class
         );
 
         assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
@@ -457,12 +487,14 @@ public class AssignmentIntegrationTest {
 
     @Test
     void deleteAssignments_withoutAdminRights_shouldReturnForbidden() {
+        HttpHeaders headers = headersWithToken(regularUserId, "ROLE_CLIENT");
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
         ResponseEntity<Void> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.DELETE,
-                null,
-                Void.class,
-                regularUserId // Не ADMIN
+                entity,
+                Void.class
         );
 
         assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
@@ -470,6 +502,7 @@ public class AssignmentIntegrationTest {
 
     @Test
     void deleteAssignments_withoutActorId_shouldReturnUnauthorized() {
+        // No Authorization header
         ResponseEntity<Void> response = restTemplate.exchange(
                 "/api/v1/assignments",
                 HttpMethod.DELETE,
@@ -477,12 +510,12 @@ public class AssignmentIntegrationTest {
                 Void.class
         );
 
-        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
     }
 
     @Test
     void createAssignment_updateExisting_shouldUpdateRole() {
-        // Создаем первоначальное назначение
+        // Create initial assignment
         UserProductAssignment existing = new UserProductAssignment();
         existing.setId(UUID.randomUUID());
         existing.setUserId(regularUserId);
@@ -491,34 +524,31 @@ public class AssignmentIntegrationTest {
         existing.setAssignedAt(Instant.now());
         assignmentRepository.save(existing);
 
-        // Обновляем назначение через ADMIN
+        HttpHeaders headers = headersWithToken(adminUserId, "ROLE_ADMIN");
+
         UserProductAssignmentRequest request = new UserProductAssignmentRequest();
         request.setUserId(regularUserId);
         request.setProductId(productId);
         request.setRole(AssignmentRole.RESELLER);
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
         HttpEntity<UserProductAssignmentRequest> entity = new HttpEntity<>(request, headers);
 
         ResponseEntity<UserProductAssignmentDto> response = restTemplate.exchange(
-                "/api/v1/assignments?actorId={actorId}",
+                "/api/v1/assignments",
                 HttpMethod.POST,
                 entity,
-                UserProductAssignmentDto.class,
-                adminUserId
+                UserProductAssignmentDto.class
         );
 
         assertEquals(HttpStatus.CREATED, response.getStatusCode());
         assertEquals(AssignmentRole.RESELLER, response.getBody().getRole());
 
-        // Проверяем, что назначение обновилось
         var updated = assignmentRepository.findByUserIdAndProductId(regularUserId, productId);
         assertTrue(updated.isPresent());
         assertEquals(AssignmentRole.RESELLER, updated.get().getRoleOnProduct());
     }
 
-    // Вспомогательные методы
+    // helper methods
     private void createAssignmentAsOwner() {
         UserProductAssignment assignment = new UserProductAssignment();
         assignment.setId(UUID.randomUUID());
@@ -530,7 +560,6 @@ public class AssignmentIntegrationTest {
     }
 
     private void createTestAssignments() {
-        // Первое назначение: regular user -> product (EDITOR)
         UserProductAssignment assignment1 = new UserProductAssignment();
         assignment1.setId(UUID.randomUUID());
         assignment1.setUserId(regularUserId);
@@ -539,7 +568,6 @@ public class AssignmentIntegrationTest {
         assignment1.setAssignedAt(Instant.now());
         assignmentRepository.save(assignment1);
 
-        // Второе назначение: regular user -> another product (VIEWER)
         UserProductAssignment assignment2 = new UserProductAssignment();
         assignment2.setId(UUID.randomUUID());
         assignment2.setUserId(regularUserId);
@@ -548,7 +576,6 @@ public class AssignmentIntegrationTest {
         assignment2.setAssignedAt(Instant.now());
         assignmentRepository.save(assignment2);
 
-        // Третье назначение: product owner -> product (OWNER)
         UserProductAssignment assignment3 = new UserProductAssignment();
         assignment3.setId(UUID.randomUUID());
         assignment3.setUserId(productOwnerUserId);
@@ -558,4 +585,3 @@ public class AssignmentIntegrationTest {
         assignmentRepository.save(assignment3);
     }
 }
-*/

@@ -164,36 +164,6 @@ public class UserService {
         return userRepository.count();
     }
 
-    /**
-     * Validates that current authenticated actor exists and has ROLE_ADMIN.
-     * The principal is expected to be the user's UUID string (set by JwtAuthWebFilter).
-     */
-//    public Mono<User> validateAdmin() {
-//        return ReactiveSecurityContextHolder.getContext()
-//                .switchIfEmpty(Mono.error(new UnauthorizedException("Unauthorized")))
-//                .flatMap(ctx -> {
-//                    if (ctx.getAuthentication() == null || ctx.getAuthentication().getPrincipal() == null) {
-//                        return Mono.error(new UnauthorizedException("Unauthorized"));
-//                    }
-//                    String principal = ctx.getAuthentication().getPrincipal().toString();
-//                    UUID actorId;
-//                    try {
-//                        actorId = UUID.fromString(principal);
-//                    } catch (IllegalArgumentException ex) {
-//                        return Mono.error(new UnauthorizedException("Invalid principal"));
-//                    }
-//
-//                    return userRepository.findById(actorId)
-//                            .switchIfEmpty(Mono.error(new NotFoundException("Actor not found: " + actorId)))
-//                            .flatMap(actor -> {
-//                                if (actor.getRole() != UserRole.ROLE_ADMIN) {
-//                                    return Mono.error(new ForbiddenException("Only ADMIN can perform this action"));
-//                                }
-//                                return Mono.just(actor);
-//                            });
-//                });
-//    }
-
     public Mono<User> validateAdmin() {
         return ReactiveSecurityContextHolder.getContext()
                 .switchIfEmpty(Mono.error(new UnauthorizedException("Unauthorized")))

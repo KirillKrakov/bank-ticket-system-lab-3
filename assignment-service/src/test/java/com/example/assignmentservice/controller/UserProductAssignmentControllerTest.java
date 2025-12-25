@@ -1,4 +1,4 @@
-/*package com.example.assignmentservice.controller;
+package com.example.assignmentservice.controller;
 
 import com.example.assignmentservice.controller.UserProductAssignmentController;
 import com.example.assignmentservice.dto.UserProductAssignmentDto;
@@ -14,6 +14,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.List;
@@ -28,6 +29,9 @@ class UserProductAssignmentControllerTest {
 
     @Mock
     private UserProductAssignmentService service;
+
+    @Mock
+    private Jwt jwt;
 
     @InjectMocks
     private UserProductAssignmentController controller;
@@ -62,20 +66,70 @@ class UserProductAssignmentControllerTest {
         req.setProductId(testProductId);
         req.setRole(AssignmentRole.PRODUCT_OWNER);
 
-        when(service.assign(any(), any(), any(), any())).thenReturn(testAssignment);
-        when(service.toDto(any())).thenReturn(testDto);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+        when(jwt.getClaimAsString("role")).thenReturn("ROLE_ADMIN");
+        when(service.assign(eq(actorId), eq("ROLE_ADMIN"), eq(testUserId), eq(testProductId), eq(AssignmentRole.PRODUCT_OWNER)))
+                .thenReturn(testAssignment);
+        when(service.toDto(testAssignment)).thenReturn(testDto);
 
         // Act
         ResponseEntity<UserProductAssignmentDto> response = controller.assign(
-                req, actorId, UriComponentsBuilder.newInstance());
+                req, jwt, UriComponentsBuilder.newInstance());
 
         // Assert
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isEqualTo(testDto);
         assertThat(response.getHeaders().getLocation()).isNotNull();
 
-        verify(service).assign(actorId, testUserId, testProductId, AssignmentRole.PRODUCT_OWNER);
+        verify(service).assign(actorId, "ROLE_ADMIN", testUserId, testProductId, AssignmentRole.PRODUCT_OWNER);
         verify(service).toDto(testAssignment);
+        verify(jwt).getClaimAsString("uid");
+        verify(jwt).getClaimAsString("role");
+    }
+
+    @Test
+    void assign_UsesSubjectWhenUidNotPresent_Success() {
+        // Arrange
+        UserProductAssignmentRequest req = new UserProductAssignmentRequest();
+        req.setUserId(testUserId);
+        req.setProductId(testProductId);
+        req.setRole(AssignmentRole.PRODUCT_OWNER);
+
+        when(jwt.getClaimAsString("uid")).thenReturn(null);
+        when(jwt.getSubject()).thenReturn(actorId.toString());
+        when(jwt.getClaimAsString("role")).thenReturn("ROLE_ADMIN");
+        when(service.assign(eq(actorId), eq("ROLE_ADMIN"), eq(testUserId), eq(testProductId), eq(AssignmentRole.PRODUCT_OWNER)))
+                .thenReturn(testAssignment);
+        when(service.toDto(testAssignment)).thenReturn(testDto);
+
+        // Act
+        ResponseEntity<UserProductAssignmentDto> response = controller.assign(
+                req, jwt, UriComponentsBuilder.newInstance());
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isEqualTo(testDto);
+
+        verify(jwt).getClaimAsString("uid");
+        verify(jwt).getSubject();
+        verify(jwt).getClaimAsString("role");
+    }
+
+    @Test
+    void assign_Unauthorized_WhenJwtIsNull() {
+        // Arrange
+        UserProductAssignmentRequest req = new UserProductAssignmentRequest();
+        req.setUserId(testUserId);
+        req.setProductId(testProductId);
+        req.setRole(AssignmentRole.PRODUCT_OWNER);
+
+        // Act
+        ResponseEntity<UserProductAssignmentDto> response = controller.assign(
+                req, null, UriComponentsBuilder.newInstance());
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(service, never()).assign(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -155,29 +209,63 @@ class UserProductAssignmentControllerTest {
     @Test
     void deleteAssignments_WithAllParams_DeletesWithFilters() {
         // Arrange
-        doNothing().when(service).deleteAssignments(actorId, testUserId, testProductId);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+        when(jwt.getClaimAsString("role")).thenReturn("ROLE_ADMIN");
+        doNothing().when(service).deleteAssignments(actorId, "ROLE_ADMIN", testUserId, testProductId);
 
         // Act
-        ResponseEntity<Void> response = controller.deleteAssignments(actorId, testUserId, testProductId);
+        ResponseEntity<Void> response = controller.deleteAssignments(jwt, testUserId, testProductId);
 
         // Assert
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
-        verify(service).deleteAssignments(actorId, testUserId, testProductId);
+        verify(service).deleteAssignments(actorId, "ROLE_ADMIN", testUserId, testProductId);
+        verify(jwt).getClaimAsString("uid");
+        verify(jwt).getClaimAsString("role");
     }
 
     @Test
     void deleteAssignments_WithoutFilters_DeletesAll() {
         // Arrange
-        doNothing().when(service).deleteAssignments(actorId, null, null);
+        when(jwt.getClaimAsString("uid")).thenReturn(actorId.toString());
+        when(jwt.getClaimAsString("role")).thenReturn("ROLE_ADMIN");
+        doNothing().when(service).deleteAssignments(actorId, "ROLE_ADMIN", null, null);
 
         // Act
-        ResponseEntity<Void> response = controller.deleteAssignments(actorId, null, null);
+        ResponseEntity<Void> response = controller.deleteAssignments(jwt, null, null);
 
         // Assert
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
-        verify(service).deleteAssignments(actorId, null, null);
+        verify(service).deleteAssignments(actorId, "ROLE_ADMIN", null, null);
+    }
+
+    @Test
+    void deleteAssignments_Unauthorized_WhenJwtIsNull() {
+        // Act
+        ResponseEntity<Void> response = controller.deleteAssignments(null, testUserId, testProductId);
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(service, never()).deleteAssignments(any(), any(), any(), any());
+    }
+
+    @Test
+    void deleteAssignments_UsesSubjectWhenUidNotPresent_Success() {
+        // Arrange
+        when(jwt.getClaimAsString("uid")).thenReturn(null);
+        when(jwt.getSubject()).thenReturn(actorId.toString());
+        when(jwt.getClaimAsString("role")).thenReturn("ROLE_ADMIN");
+        doNothing().when(service).deleteAssignments(actorId, "ROLE_ADMIN", null, null);
+
+        // Act
+        ResponseEntity<Void> response = controller.deleteAssignments(jwt, null, null);
+
+        // Assert
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        verify(jwt).getClaimAsString("uid");
+        verify(jwt).getSubject();
+        verify(jwt).getClaimAsString("role");
     }
 }
-*/
