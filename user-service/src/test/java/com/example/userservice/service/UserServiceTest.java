@@ -1,6 +1,5 @@
 package com.example.userservice.service;
 
-import com.example.userservice.dto.UserDto;
 import com.example.userservice.dto.UserRequest;
 import com.example.userservice.exception.*;
 import com.example.userservice.feign.ApplicationServiceClient;
@@ -19,13 +18,14 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.util.context.Context;
 
 import java.time.Instant;
 import java.util.UUID;
 
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -45,6 +45,8 @@ class UserServiceTest {
 
     private final UUID testUserId = UUID.randomUUID();
     private final UUID actorAdminId = UUID.randomUUID();
+    private final String adminUsername = "adminUser";
+    private final String clientUsername = "clientUser";
 
     @BeforeEach
     void setUp() {
@@ -252,9 +254,10 @@ class UserServiceTest {
     @Test
     void update_Success_UpdatesUser() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User existingUser = new User();
         existingUser.setId(testUserId);
@@ -311,11 +314,12 @@ class UserServiceTest {
     @Test
     void update_UserNotFound_ThrowsNotFound() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.empty());
 
         UserRequest req = new UserRequest();
@@ -344,16 +348,12 @@ class UserServiceTest {
     @Test
     void update_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User nonAdmin = new User();
-        nonAdmin.setId(actorAdminId);
-        nonAdmin.setRole(UserRole.ROLE_CLIENT);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User testUser = new User();
-        testUser.setId(testUserId);
-        testUser.setRole(UserRole.ROLE_CLIENT);
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(nonAdmin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(testUser));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
@@ -379,15 +379,16 @@ class UserServiceTest {
     @Test
     void delete_Success_DeletesUserAndApplications() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User userToDelete = new User();
         userToDelete.setId(testUserId);
         userToDelete.setUsername("toDelete");
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(userToDelete));
 
         // applicationServiceClient.deleteApplicationsByUserId is void -> doNothing
@@ -413,9 +414,10 @@ class UserServiceTest {
     @Test
     void delete_ApplicationServiceFails_ContinuesUserDeletion_or_errorsDependingOnImplementation() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
         User userToDelete = new User();
         userToDelete.setId(testUserId);
@@ -454,9 +456,10 @@ class UserServiceTest {
     @Test
     void promoteToManager_Success_PromotesClientToManager() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User client = new User();
         client.setId(testUserId);
@@ -466,7 +469,7 @@ class UserServiceTest {
         promotedUser.setId(testUserId);
         promotedUser.setRole(UserRole.ROLE_MANAGER);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(client));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(promotedUser));
 
@@ -487,18 +490,14 @@ class UserServiceTest {
     }
 
     @Test
-    void promoteToManager_AlreadyManager_DoesNothing() {
+    void promoteToManager_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User clientUser = new User();
+        clientUser.setId(testUserId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        User manager = new User();
-        manager.setId(testUserId);
-        manager.setRole(UserRole.ROLE_MANAGER);
-
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
-        when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
@@ -521,9 +520,10 @@ class UserServiceTest {
     @Test
     void demoteToClient_Success_DemotesManagerToClient() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
         User manager = new User();
         manager.setId(testUserId);
@@ -533,7 +533,7 @@ class UserServiceTest {
         demotedUser.setId(testUserId);
         demotedUser.setRole(UserRole.ROLE_CLIENT);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
         when(userRepository.findById(testUserId)).thenReturn(Mono.just(manager));
         when(userRepository.save(any(User.class))).thenReturn(Mono.just(demotedUser));
 
@@ -554,7 +554,7 @@ class UserServiceTest {
     }
 
     @Test
-    void demoteToClient_AlreadyClient_DoesNothing() {
+    void demoteToClient_NotAdmin_ThrowsForbidden() {
         // Arrange
         User admin = new User();
         admin.setId(actorAdminId);
@@ -582,21 +582,17 @@ class UserServiceTest {
         }
     }
 
-    // -----------------------
-    // count tests
-    // -----------------------
-    @Test
-    void count_ReturnsUserCount() {
-        // Arrange
-        long userCount = 42L;
-        when(userRepository.count()).thenReturn(Mono.just(userCount));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         // Act & Assert
-        StepVerifier.create(userService.count())
-                .expectNext(userCount)
-                .verifyComplete();
+        StepVerifier.create(withClientContext(userService.demoteToClient(testUserId)))
+                .expectErrorMatches(throwable ->
+                        throwable instanceof ForbiddenException &&
+                                throwable.getMessage().contains("Only ADMIN can perform this action"))
+                .verify();
 
-        verify(userRepository).count();
+        verify(userRepository).findByUsername(clientUsername);
+        verify(userRepository, never()).findById(any(UUID.class));
     }
 
     // -----------------------
@@ -605,11 +601,12 @@ class UserServiceTest {
     @Test
     void validateAdmin_AdminExists_ReturnsAdmin() {
         // Arrange
-        User admin = new User();
-        admin.setId(actorAdminId);
-        admin.setRole(UserRole.ROLE_ADMIN);
+        User adminUser = new User();
+        adminUser.setId(actorAdminId);
+        adminUser.setUsername(adminUsername);
+        adminUser.setRole(UserRole.ROLE_ADMIN);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(admin));
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.just(adminUser));
 
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
@@ -628,11 +625,12 @@ class UserServiceTest {
     @Test
     void validateAdmin_NotAdmin_ThrowsForbidden() {
         // Arrange
-        User client = new User();
-        client.setId(actorAdminId);
-        client.setRole(UserRole.ROLE_CLIENT);
+        User clientUser = new User();
+        clientUser.setId(actorAdminId);
+        clientUser.setUsername(clientUsername);
+        clientUser.setRole(UserRole.ROLE_CLIENT);
 
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.just(client));
+        when(userRepository.findByUsername(clientUsername)).thenReturn(Mono.just(clientUser));
 
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);
@@ -653,7 +651,7 @@ class UserServiceTest {
     @Test
     void validateAdmin_UserNotFound_ThrowsNotFound() {
         // Arrange
-        when(userRepository.findById(actorAdminId)).thenReturn(Mono.empty());
+        when(userRepository.findByUsername(adminUsername)).thenReturn(Mono.empty());
 
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(actorAdminId.toString(), null);

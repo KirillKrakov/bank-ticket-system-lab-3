@@ -36,6 +36,24 @@ services:
       timeout: 5s
       retries: 8
 
+#  gateway:
+#    build:
+#      context: ./gateway
+#      dockerfile: Dockerfile
+#      args:
+#        MODULE_PATH: gateway
+#        JAR_NAME: gateway-1.0.0.jar
+#    ports:
+#      - "8080:8080"
+#    environment:
+#      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+#      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
+#    depends_on:
+#      - config-server
+#      - service-discovery
+#    networks:
+#      - bank-network
+
   postgres-user:
     image: postgres:17
     environment:
