@@ -1,7 +1,7 @@
 services:
   service-discovery:
     build:
-      context: ./service-discovery # потом поменять на .
+      context: . # можно поменять на ./service-discovery (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: service-discovery
@@ -10,36 +10,31 @@ services:
       - "8761:8761"
     networks:
       - bank-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8761/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   config-server:
     build:
-      context: ./config-server # потом поменять на .
+      context: . # можно поменять на ./config-server (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: config-server
         JAR_NAME: config-server-1.0.0.jar
     ports:
       - "8888:8888"
+    depends_on:
+      service-discovery:
+        condition: service_healthy
     networks:
       - bank-network
-
-#  gateway:
-#    build:
-#      context: ./gateway
-#      dockerfile: Dockerfile
-#      args:
-#        MODULE_PATH: gateway
-#        JAR_NAME: gateway-1.0.0.jar
-#    ports:
-#      - "8080:8080"
-#    environment:
-#      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
-#      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
-#    depends_on:
-#      - config-server
-#      - service-discovery
-#    networks:
-#      - bank-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8888/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   postgres-user:
     image: postgres:17
@@ -61,7 +56,7 @@ services:
 
   user-service:
     build:
-      context: ./user-service # потом поменять на .
+      context: . # можно поменять на ./user-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: user-service
@@ -77,9 +72,9 @@ services:
       postgres-user:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -103,7 +98,7 @@ services:
 
   product-service:
     build:
-      context: ./product-service # потом поменять на .
+      context: . # можно поменять на ./product-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: product-service
@@ -118,9 +113,9 @@ services:
       postgres-product:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -142,7 +137,7 @@ services:
 
   assignment-service:
     build:
-      context: ./assignment-service # потом поменять на .
+      context: . # можно поменять на ./assignment-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: assignment-service
@@ -157,9 +152,9 @@ services:
       postgres-assignment:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -183,7 +178,7 @@ services:
 
   application-service:
     build:
-      context: ./application-service # потом поменять на .
+      context: . # можно поменять на ./application-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: application-service
@@ -198,9 +193,9 @@ services:
       postgres-app:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
@@ -224,7 +219,7 @@ services:
 
   tag-service:
     build:
-      context: ./tag-service # потом поменять на .
+      context: . # можно поменять на ./tag-service (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: tag-service
@@ -239,15 +234,15 @@ services:
       postgres-tag:
         condition: service_healthy
       config-server:
-        condition: service_started
+        condition: service_healthy
       service-discovery:
-        condition: service_started
+        condition: service_healthy
     networks:
       - bank-network
 
   gateway:
     build:
-      context: ./gateway # потом поменять на .
+      context: . # можно поменять на ./gateway (запуск готовых jar)
       dockerfile: Dockerfile
       args:
         MODULE_PATH: gateway
@@ -258,9 +253,15 @@ services:
       SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
       EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://service-discovery:8761/eureka
     depends_on:
-      config-server:
+      user-service:
         condition: service_started
-      service-discovery:
+      product-service:
+        condition: service_started
+      application-service:
+        condition: service_started
+      assignment-service:
+        condition: service_started
+      tag-service:
         condition: service_started
     networks:
       - bank-network
