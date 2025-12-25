@@ -1,4 +1,4 @@
-/*package com.example.assignmentservice.service;
+package com.example.assignmentservice.service;
 
 import com.example.assignmentservice.dto.UserProductAssignmentDto;
 import com.example.assignmentservice.exception.ForbiddenException;
@@ -9,9 +9,7 @@ import com.example.assignmentservice.feign.ProductServiceClient;
 import com.example.assignmentservice.feign.UserServiceClient;
 import com.example.assignmentservice.model.entity.UserProductAssignment;
 import com.example.assignmentservice.model.enums.AssignmentRole;
-import com.example.assignmentservice.model.enums.UserRole;
 import com.example.assignmentservice.repository.UserProductAssignmentRepository;
-import com.example.assignmentservice.service.UserProductAssignmentService;
 import feign.FeignException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,21 +45,24 @@ class AssignmentServiceTest {
     private UUID actorId;
     private UUID userId;
     private UUID productId;
+    private String adminRole;
+    private String clientRole;
 
     @BeforeEach
     void setUp() {
         actorId = UUID.randomUUID();
         userId = UUID.randomUUID();
         productId = UUID.randomUUID();
+        adminRole = "ROLE_ADMIN";
+        clientRole = "ROLE_CLIENT";
     }
 
     // -----------------------
     // assign tests
     // -----------------------
     @Test
-    void assign_createsNewAssignment_whenNoExisting_and_actorIsAdmin() {
+    void assign_createsNewAssignment_whenNoExisting_and_actorIsAdmin_viaRoleClaim() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
         when(userServiceClient.userExists(userId)).thenReturn(true);
         when(productServiceClient.productExists(productId)).thenReturn(true);
         when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
@@ -77,25 +78,48 @@ class AssignmentServiceTest {
         when(repo.save(any(UserProductAssignment.class))).thenReturn(savedAssignment);
 
         // Act
-        UserProductAssignment result = svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER);
+        UserProductAssignment result = svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER);
 
         // Assert
         assertNotNull(result);
         verify(repo, times(1)).save(any(UserProductAssignment.class));
-        verify(userServiceClient, times(1)).getUserRole(actorId);
         verify(userServiceClient, times(1)).userExists(userId);
         verify(productServiceClient, times(1)).productExists(productId);
     }
 
     @Test
+    void assign_createsNewAssignment_whenNoExisting_and_actorIsProductOwner() {
+        // Arrange
+        when(userServiceClient.userExists(userId)).thenReturn(true);
+        when(productServiceClient.productExists(productId)).thenReturn(true);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(true);
+        when(repo.findByUserIdAndProductId(userId, productId)).thenReturn(Optional.empty());
+
+        UserProductAssignment savedAssignment = new UserProductAssignment();
+        savedAssignment.setId(UUID.randomUUID());
+        savedAssignment.setUserId(userId);
+        savedAssignment.setProductId(productId);
+        savedAssignment.setRoleOnProduct(AssignmentRole.VIEWER);
+        savedAssignment.setAssignedAt(Instant.now());
+
+        when(repo.save(any(UserProductAssignment.class))).thenReturn(savedAssignment);
+
+        // Act
+        UserProductAssignment result = svc.assign(actorId, clientRole, userId, productId, AssignmentRole.VIEWER);
+
+        // Assert
+        assertNotNull(result);
+        verify(repo, times(1)).save(any(UserProductAssignment.class));
+        verify(repo, times(1)).existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER);
+    }
+
+    @Test
     void assign_updatesExistingAssignment_whenFound_and_actorIsOwner() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
         when(userServiceClient.userExists(userId)).thenReturn(true);
         when(productServiceClient.productExists(productId)).thenReturn(true);
         when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(true);
 
-        // Сохраняем старое время для проверки
         Instant oldAssignedAt = Instant.now().minusSeconds(3600);
 
         UserProductAssignment existingAssignment = new UserProductAssignment();
@@ -106,16 +130,10 @@ class AssignmentServiceTest {
         existingAssignment.setAssignedAt(oldAssignedAt);
 
         when(repo.findByUserIdAndProductId(userId, productId)).thenReturn(Optional.of(existingAssignment));
-
-        // Мокаем сохранение, возвращая измененный объект
-        when(repo.save(any(UserProductAssignment.class))).thenAnswer(invocation -> {
-            UserProductAssignment saved = invocation.getArgument(0);
-            // Сервис уже установил новое время, возвращаем как есть
-            return saved;
-        });
+        when(repo.save(any(UserProductAssignment.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // Act
-        UserProductAssignment result = svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER);
+        UserProductAssignment result = svc.assign(actorId, clientRole, userId, productId, AssignmentRole.PRODUCT_OWNER);
 
         // Assert
         assertNotNull(result);
@@ -128,12 +146,25 @@ class AssignmentServiceTest {
     @Test
     void assign_throwsForbidden_whenActorIsNotAdminAndNotOwner() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
         when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
 
         // Act & Assert
         assertThrows(ForbiddenException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+                () -> svc.assign(actorId, clientRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
+
+        verify(repo, never()).save(any());
+        verify(userServiceClient, never()).userExists(any());
+        verify(productServiceClient, never()).productExists(any());
+    }
+
+    @Test
+    void assign_throwsForbidden_whenActorRoleClaimIsNull_and_actorIsNotOwner() {
+        // Arrange
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+
+        // Act & Assert
+        assertThrows(ForbiddenException.class,
+                () -> svc.assign(actorId, null, userId, productId, AssignmentRole.PRODUCT_OWNER));
 
         verify(repo, never()).save(any());
         verify(userServiceClient, never()).userExists(any());
@@ -143,12 +174,12 @@ class AssignmentServiceTest {
     @Test
     void assign_throwsNotFound_whenUserNotFound() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
         when(userServiceClient.userExists(userId)).thenReturn(false);
 
         // Act & Assert
         assertThrows(NotFoundException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
 
         verify(repo, never()).save(any());
     }
@@ -156,38 +187,53 @@ class AssignmentServiceTest {
     @Test
     void assign_throwsNotFound_whenProductNotFound() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
         when(userServiceClient.userExists(userId)).thenReturn(true);
         when(productServiceClient.productExists(productId)).thenReturn(false);
 
         // Act & Assert
         assertThrows(NotFoundException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
 
         verify(repo, never()).save(any());
     }
 
     @Test
-    void assign_throwsServiceUnavailable_whenUserServiceFails() {
+    void assign_throwsServiceUnavailable_whenUserServiceFailsCheckingUser() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenThrow(FeignException.class);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
 
         // Act & Assert
         assertThrows(ServiceUnavailableException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
 
         verify(repo, never()).save(any());
     }
 
     @Test
-    void assign_throwsNotFoundException_whenActorNotFound() {
+    void assign_throwsNotFoundException_whenActorNotFound_inCheckActorRights() {
         // Arrange
         FeignException.NotFound notFoundException = mock(FeignException.NotFound.class);
-        when(userServiceClient.getUserRole(actorId)).thenThrow(notFoundException);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenThrow(notFoundException);
 
         // Act & Assert
-        assertThrows(NotFoundException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
+
+        verify(repo, never()).save(any());
+    }
+
+    @Test
+    void assign_throwsServiceUnavailable_whenUserServiceFails_inCheckActorRights() {
+        // Arrange
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
+
+        // Act & Assert
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
 
         verify(repo, never()).save(any());
     }
@@ -280,12 +326,18 @@ class AssignmentServiceTest {
     // -----------------------
     @Test
     void deleteAssignments_throwsForbidden_whenActorNotAdmin() {
-        // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_CLIENT);
-
         // Act & Assert
         assertThrows(ForbiddenException.class,
-                () -> svc.deleteAssignments(actorId, userId, productId));
+                () -> svc.deleteAssignments(actorId, clientRole, userId, productId));
+
+        verify(repo, never()).deleteByUserIdAndProductId(any(), any());
+    }
+
+    @Test
+    void deleteAssignments_throwsForbidden_whenActorRoleClaimIsNull() {
+        // Act & Assert
+        assertThrows(ForbiddenException.class,
+                () -> svc.deleteAssignments(actorId, null, userId, productId));
 
         verify(repo, never()).deleteByUserIdAndProductId(any(), any());
     }
@@ -293,12 +345,11 @@ class AssignmentServiceTest {
     @Test
     void deleteAssignments_deleteSpecificAssignment_whenBothIdsProvided() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
         when(userServiceClient.userExists(userId)).thenReturn(true);
         when(productServiceClient.productExists(productId)).thenReturn(true);
 
         // Act
-        svc.deleteAssignments(actorId, userId, productId);
+        svc.deleteAssignments(actorId, adminRole, userId, productId);
 
         // Assert
         verify(repo, times(1)).deleteByUserIdAndProductId(userId, productId);
@@ -309,11 +360,10 @@ class AssignmentServiceTest {
     @Test
     void deleteAssignments_deleteByUser_whenUserProvided() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
         when(userServiceClient.userExists(userId)).thenReturn(true);
 
         // Act
-        svc.deleteAssignments(actorId, userId, null);
+        svc.deleteAssignments(actorId, adminRole, userId, null);
 
         // Assert
         verify(repo, times(1)).deleteByUserId(userId);
@@ -324,11 +374,10 @@ class AssignmentServiceTest {
     @Test
     void deleteAssignments_deleteByProduct_whenProductProvided() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
         when(productServiceClient.productExists(productId)).thenReturn(true);
 
         // Act
-        svc.deleteAssignments(actorId, null, productId);
+        svc.deleteAssignments(actorId, adminRole, null, productId);
 
         // Assert
         verify(repo, times(1)).deleteByProductId(productId);
@@ -338,11 +387,8 @@ class AssignmentServiceTest {
 
     @Test
     void deleteAssignments_deleteAll_whenNoIdsProvided() {
-        // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
-
         // Act
-        svc.deleteAssignments(actorId, null, null);
+        svc.deleteAssignments(actorId, adminRole, null, null);
 
         // Assert
         verify(repo, times(1)).deleteAll();
@@ -353,12 +399,11 @@ class AssignmentServiceTest {
     @Test
     void deleteAssignments_throwsNotFoundException_whenUserNotFound() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
         when(userServiceClient.userExists(userId)).thenReturn(false);
 
         // Act & Assert
         assertThrows(NotFoundException.class,
-                () -> svc.deleteAssignments(actorId, userId, null));
+                () -> svc.deleteAssignments(actorId, adminRole, userId, null));
 
         verify(repo, never()).deleteByUserId(any());
     }
@@ -366,11 +411,11 @@ class AssignmentServiceTest {
     @Test
     void deleteAssignments_throwsServiceUnavailable_whenUserServiceFails() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenThrow(FeignException.class);
+        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
 
         // Act & Assert
         assertThrows(ServiceUnavailableException.class,
-                () -> svc.deleteAssignments(actorId, userId, productId));
+                () -> svc.deleteAssignments(actorId, adminRole, userId, productId));
 
         verify(repo, never()).deleteByUserIdAndProductId(any(), any());
     }
@@ -379,7 +424,28 @@ class AssignmentServiceTest {
     void deleteAssignments_throwsUnauthorized_whenActorIdIsNull() {
         // Act & Assert
         assertThrows(UnauthorizedException.class,
-                () -> svc.deleteAssignments(null, userId, productId));
+                () -> svc.deleteAssignments(null, adminRole, userId, productId));
+    }
+
+    @Test
+    void deleteAssignments_throwsNotFoundException_whenActorNotFound_inCheckAdminRights() {
+        // Arrange
+        FeignException.NotFound notFoundException = mock(FeignException.NotFound.class);
+        when(userServiceClient.userExists(userId)).thenThrow(notFoundException);
+
+        // Act & Assert
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.deleteAssignments(actorId, adminRole, userId, productId));
+    }
+
+    @Test
+    void deleteAssignments_throwsServiceUnavailable_whenUserServiceFails_inCheckAdminRights() {
+        // Arrange
+        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
+
+        // Act & Assert
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.deleteAssignments(actorId, adminRole, userId, productId));
     }
 
     // -----------------------
@@ -468,33 +534,68 @@ class AssignmentServiceTest {
     // Edge cases and exception handling
     // -----------------------
     @Test
-    void checkUserExists_throwsServiceUnavailable_whenFeignException1() {
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
-        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
+    void checkUserExists_returnsNull_throwsServiceUnavailable() {
+        // Arrange
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenReturn(null);
 
         // Act & Assert
         assertThrows(ServiceUnavailableException.class,
-                () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
+    }
+
+    @Test
+    void checkUserExists_returnsFalse_throwsNotFoundException() {
+        // Arrange
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenReturn(false);
+
+        // Act & Assert
+        assertThrows(NotFoundException.class,
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
+    }
+
+    @Test
+    void checkProductExists_returnsNull_throwsServiceUnavailable() {
+        // Arrange
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
+        when(userServiceClient.userExists(userId)).thenReturn(true);
+        when(productServiceClient.productExists(productId)).thenReturn(null);
+
+        // Act & Assert
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
     }
 
     @Test
     void checkProductExists_throwsServiceUnavailable_whenFeignException() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenReturn(UserRole.ROLE_ADMIN);
+        when(repo.existsByUserIdAndProductIdAndRoleOnProduct(actorId, productId, AssignmentRole.PRODUCT_OWNER)).thenReturn(false);
         when(userServiceClient.userExists(userId)).thenReturn(true);
         when(productServiceClient.productExists(productId)).thenThrow(FeignException.class);
 
         // Act & Assert
-        assertThrows(ServiceUnavailableException.class, () -> svc.assign(actorId, userId, productId, AssignmentRole.PRODUCT_OWNER));
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.assign(actorId, adminRole, userId, productId, AssignmentRole.PRODUCT_OWNER));
+    }
+
+    @Test
+    void checkAdminRights_throwsNotFoundException_whenActorNotFound() {
+        // Arrange
+        FeignException.NotFound notFoundException = mock(FeignException.NotFound.class);
+        when(userServiceClient.userExists(userId)).thenThrow(notFoundException);
+        // Act & Assert
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.deleteAssignments(actorId, adminRole, userId, productId));
     }
 
     @Test
     void checkAdminRights_throwsServiceUnavailable_whenFeignException() {
         // Arrange
-        when(userServiceClient.getUserRole(actorId)).thenThrow(FeignException.class);
+        when(userServiceClient.userExists(userId)).thenThrow(FeignException.class);
 
         // Act & Assert
-        assertThrows(ServiceUnavailableException.class, () -> svc.deleteAssignments(actorId, null, null));
+        assertThrows(ServiceUnavailableException.class,
+                () -> svc.deleteAssignments(actorId, adminRole, userId, productId));
     }
 }
-*/

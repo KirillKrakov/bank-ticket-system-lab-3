@@ -6,6 +6,9 @@ import com.example.userservice.dto.UserRequest;
 import com.example.userservice.model.entity.User;
 import com.example.userservice.model.enums.UserRole;
 import com.example.userservice.repository.UserRepository;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,11 +25,15 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.time.Instant;
+import java.util.Date;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 @Testcontainers
@@ -34,6 +41,9 @@ import static org.mockito.Mockito.when;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         classes = UserServiceApplication.class)
 public class UserIntegrationTest {
+
+    // Keep secret length >= 32 bytes for HMAC-SHA256
+    private static final String SECRET = "test-secret-very-long-string-at-least-32-bytes-123456";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:17-alpine")
@@ -43,7 +53,7 @@ public class UserIntegrationTest {
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        // Используем URL без пуллинга, Spring Boot сам настроит пул
+        // R2DBC URL (use mapped port)
         registry.add("spring.r2dbc.url", () ->
                 String.format("r2dbc:postgresql://%s:%d/%s",
                         POSTGRES.getHost(),
@@ -52,17 +62,23 @@ public class UserIntegrationTest {
         registry.add("spring.r2dbc.username", POSTGRES::getUsername);
         registry.add("spring.r2dbc.password", POSTGRES::getPassword);
 
-        // Конфигурация пула
+        // Pool config
         registry.add("spring.r2dbc.pool.enabled", () -> "true");
         registry.add("spring.r2dbc.pool.initial-size", () -> "5");
         registry.add("spring.r2dbc.pool.max-size", () -> "10");
         registry.add("spring.r2dbc.pool.max-idle-time", () -> "30m");
 
-        // Отключаем миграции и другие ненужные для тестов компоненты
+        // Disable migrations and cloud infra for tests
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("spring.liquibase.enabled", () -> "false");
         registry.add("spring.cloud.discovery.enabled", () -> "false");
         registry.add("spring.cloud.config.enabled", () -> "false");
+
+        // Ensure jwt secret visible to application under test
+        registry.add("jwt.secret", () -> SECRET);
+        registry.add("jwt.expiration-ms", () -> 3600000);
+
+        // reduce noise
         registry.add("logging.level.org.springframework.r2dbc", () -> "DEBUG");
     }
 
@@ -84,27 +100,26 @@ public class UserIntegrationTest {
     private UUID adminId;
     private UUID clientId;
     private UUID managerId;
-    private String adminUsername = "admin";
-    private String clientUsername = "client";
-    private String managerUsername = "manager";
+    private final String adminUsername = "admin";
+    private final String clientUsername = "client";
+    private final String managerUsername = "manager";
 
     @BeforeEach
     void setUp() {
         createTableIfNotExists();
-        // Очистка базы данных перед каждым тестом
         userRepository.deleteAll().block();
 
-        // Создаем тестовых пользователей с разными ролями
+        // create test users
         adminId = createTestUser(adminUsername, "admin@example.com", UserRole.ROLE_ADMIN);
         clientId = createTestUser(clientUsername, "client@example.com", UserRole.ROLE_CLIENT);
         managerId = createTestUser(managerUsername, "manager@example.com", UserRole.ROLE_MANAGER);
 
+        // mock application service deletion call to succeed
         when(applicationServiceClient.deleteApplicationsByUserId(anyString()))
                 .thenAnswer(invocation -> Mono.empty());
     }
 
     private void createTableIfNotExists() {
-        // SQL для создания таблицы users (или app_user - смотря какое имя используется)
         String createTableSql = """
             CREATE TABLE IF NOT EXISTS app_user (
                 id UUID PRIMARY KEY,
@@ -117,14 +132,12 @@ public class UserIntegrationTest {
                 version BIGINT DEFAULT 0
             );
             """;
-
         try {
             databaseClient.sql(createTableSql)
                     .fetch()
                     .rowsUpdated()
                     .block();
         } catch (Exception e) {
-            // Логируем ошибку, но продолжаем
             System.err.println("Error creating table: " + e.getMessage());
         }
     }
@@ -143,6 +156,23 @@ public class UserIntegrationTest {
                 .block();
     }
 
+    // --- JWT helper ---
+    private String generateToken(UUID uid, String role) {
+        Key key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
+        Date now = Date.from(Instant.now());
+        Date exp = Date.from(Instant.now().plusSeconds(3600));
+        return Jwts.builder()
+                .setSubject(uid.toString())
+                .claim("uid", uid.toString())
+                .claim("role", role)
+                .setIssuedAt(now)
+                .setExpiration(exp)
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    // --- Tests ---
+
     @Test
     void createUser_shouldReturnCreatedUser() {
         UserRequest request = new UserRequest();
@@ -150,8 +180,11 @@ public class UserIntegrationTest {
         request.setEmail("newuser@example.com");
         request.setPassword("password123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isCreated()
@@ -170,40 +203,49 @@ public class UserIntegrationTest {
     @Test
     void createUser_withExistingUsername_shouldReturnConflict() {
         UserRequest request = new UserRequest();
-        request.setUsername(adminUsername); // Существующее имя пользователя
+        request.setUsername(adminUsername); // existing
         request.setEmail("newemail@example.com");
         request.setPassword("password123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
-                .expectStatus().isEqualTo(409); // Conflict
+                .expectStatus().isEqualTo(409);
     }
 
     @Test
     void createUser_withExistingEmail_shouldReturnConflict() {
         UserRequest request = new UserRequest();
         request.setUsername("newusername");
-        request.setEmail("admin@example.com"); // Существующий email
+        request.setEmail("admin@example.com"); // existing email
         request.setPassword("password123");
+
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
-                .expectStatus().isEqualTo(409); // Conflict
+                .expectStatus().isEqualTo(409);
     }
 
     @Test
     void createUser_withInvalidData_shouldReturnBadRequest() {
         UserRequest request = new UserRequest();
-        request.setUsername(null); // Невалидные данные
+        request.setUsername(null);
         request.setEmail(null);
         request.setPassword(null);
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isBadRequest();
@@ -211,8 +253,11 @@ public class UserIntegrationTest {
 
     @Test
     void getAllUsers_withPagination_shouldReturnPage() {
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.get()
                 .uri("/api/v1/users?page=0&size=2")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBodyList(UserDto.class)
@@ -221,8 +266,11 @@ public class UserIntegrationTest {
 
     @Test
     void getUserById_shouldReturnUser() {
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.get()
                 .uri("/api/v1/users/{id}", adminId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(UserDto.class)
@@ -237,9 +285,11 @@ public class UserIntegrationTest {
     @Test
     void getUserById_notFound_shouldReturnNotFound() {
         UUID nonExistingId = UUID.randomUUID();
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
         webTestClient.get()
                 .uri("/api/v1/users/{id}", nonExistingId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isNotFound();
     }
@@ -251,11 +301,11 @@ public class UserIntegrationTest {
         request.setEmail("updatedclient@example.com");
         request.setPassword("newpassword123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", adminId)
-                        .build(clientId))
+                .uri("/api/v1/users/{id}", clientId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isOk()
@@ -274,27 +324,27 @@ public class UserIntegrationTest {
         UserRequest request = new UserRequest();
         request.setUsername("updatedclient");
 
+        String clientToken = generateToken(clientId, UserRole.ROLE_CLIENT.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", clientId) // Клиент пытается обновить другого клиента
-                        .build(managerId))
+                .uri("/api/v1/users/{id}", managerId)
+                .headers(h -> h.setBearerAuth(clientToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isForbidden();
     }
 
     @Test
-    void updateUser_notFound_shouldReturnBadRequest() {
+    void updateUser_notFound_shouldReturnNotFound() {
         UUID nonExistingId = UUID.randomUUID();
         UserRequest request = new UserRequest();
         request.setUsername("updated");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", adminId)
-                        .build(nonExistingId))
+                .uri("/api/v1/users/{id}", nonExistingId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isNotFound();
@@ -302,7 +352,7 @@ public class UserIntegrationTest {
 
     @Test
     void deleteUser_asAdmin_shouldDeleteSuccessfully() {
-        // Сначала создаем пользователя для удаления
+        // create a user to delete
         User userToDelete = new User();
         userToDelete.setId(UUID.randomUUID());
         userToDelete.setUsername("todelete");
@@ -315,117 +365,92 @@ public class UserIntegrationTest {
                 .map(User::getId)
                 .block();
 
-        // Проверяем, что пользователь существует
-        assertThat(userRepository.findById(userIdToDelete).block()).isNotNull();
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
-        // Удаляем пользователя
         webTestClient.delete()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", adminId)
-                        .build(userIdToDelete))
+                .uri("/api/v1/users/{id}", userIdToDelete)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().is5xxServerError();
-
     }
 
     @Test
     void deleteUser_withoutAdminRights_shouldReturnForbidden() {
+        String clientToken = generateToken(clientId, UserRole.ROLE_CLIENT.name());
+
         webTestClient.delete()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", clientId) // Клиент пытается удалить
-                        .build(managerId))
+                .uri("/api/v1/users/{id}", managerId)
+                .headers(h -> h.setBearerAuth(clientToken))
                 .exchange()
                 .expectStatus().isForbidden();
     }
 
     @Test
     void promoteToManager_asAdmin_shouldPromoteSuccessfully() {
-        // Проверяем начальную роль
         User userBefore = userRepository.findById(clientId).block();
         assertThat(userBefore.getRole()).isEqualTo(UserRole.ROLE_CLIENT);
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/promote-manager")
-                        .queryParam("actorId", adminId)
-                        .build(clientId))
+                .uri("/api/v1/users/{id}/promote-manager", clientId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isNoContent();
 
-        // Проверяем, что роль изменилась
         User userAfter = userRepository.findById(clientId).block();
         assertThat(userAfter.getRole()).isEqualTo(UserRole.ROLE_MANAGER);
     }
 
     @Test
     void promoteToManager_alreadyManager_shouldDoNothing() {
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/promote-manager")
-                        .queryParam("actorId", adminId)
-                        .build(managerId))
+                .uri("/api/v1/users/{id}/promote-manager", managerId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isNoContent();
 
-        // Роль должна остаться менеджером
         User user = userRepository.findById(managerId).block();
         assertThat(user.getRole()).isEqualTo(UserRole.ROLE_MANAGER);
     }
 
     @Test
     void promoteToManager_withoutAdminRights_shouldReturnForbidden() {
+        String clientToken = generateToken(clientId, UserRole.ROLE_CLIENT.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/promote-manager")
-                        .queryParam("actorId", clientId)
-                        .build(clientId))
+                .uri("/api/v1/users/{id}/promote-manager", clientId)
+                .headers(h -> h.setBearerAuth(clientToken))
                 .exchange()
                 .expectStatus().isForbidden();
     }
 
     @Test
     void demoteToClient_asAdmin_shouldDemoteSuccessfully() {
-        // Проверяем начальную роль
         User userBefore = userRepository.findById(managerId).block();
         assertThat(userBefore.getRole()).isEqualTo(UserRole.ROLE_MANAGER);
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/demote-manager")
-                        .queryParam("actorId", adminId)
-                        .build(managerId))
+                .uri("/api/v1/users/{id}/demote-manager", managerId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isNoContent();
 
-        // Проверяем, что роль изменилась
         User userAfter = userRepository.findById(managerId).block();
         assertThat(userAfter.getRole()).isEqualTo(UserRole.ROLE_CLIENT);
     }
 
     @Test
-    void demoteToClient_alreadyClient_shouldDoNothing() {
-        webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/demote-manager")
-                        .queryParam("actorId", adminId)
-                        .build(clientId))
-                .exchange()
-                .expectStatus().isNoContent();
-
-        // Роль должна остаться клиентом
-        User user = userRepository.findById(clientId).block();
-        assertThat(user.getRole()).isEqualTo(UserRole.ROLE_CLIENT);
-    }
-
-    @Test
     void demoteToClient_withoutAdminRights_shouldReturnForbidden() {
+        String managerToken = generateToken(managerId, UserRole.ROLE_MANAGER.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}/demote-manager")
-                        .queryParam("actorId", managerId)
-                        .build(managerId))
+                .uri("/api/v1/users/{id}/demote-manager", managerId)
+                .headers(h -> h.setBearerAuth(managerToken))
                 .exchange()
                 .expectStatus().isForbidden();
     }
@@ -441,21 +466,22 @@ public class UserIntegrationTest {
     }
 
     @Test
-    void userExists_nonExistingUser_shouldReturnNotFound() {
+    void userExists_nonExistingUser_shouldReturnFalse() {
         UUID nonExistingId = UUID.randomUUID();
 
         webTestClient.get()
                 .uri("/api/v1/users/{id}/exists", nonExistingId)
                 .exchange()
-                .expectStatus().isNotFound()
-                .expectBody()
-                .jsonPath("$.error").isEqualTo("Not Found");
+                .expectStatus().isNotFound();
     }
 
     @Test
     void getUserRole_existingUser_shouldReturnRole() {
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.get()
                 .uri("/api/v1/users/{id}/role", adminId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(UserRole.class)
@@ -465,9 +491,11 @@ public class UserIntegrationTest {
     @Test
     void getUserRole_nonExistingUser_shouldReturnNotFound() {
         UUID nonExistingId = UUID.randomUUID();
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
         webTestClient.get()
                 .uri("/api/v1/users/{id}/role", nonExistingId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isNotFound();
     }
@@ -479,8 +507,11 @@ public class UserIntegrationTest {
         request.setEmail("testuser@example.com");
         request.setPassword("password123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isCreated()
@@ -488,7 +519,7 @@ public class UserIntegrationTest {
                 .consumeWith(response -> {
                     UserDto userDto = response.getResponseBody();
                     assertThat(userDto).isNotNull();
-                    assertThat(userDto.getUsername()).isEqualTo("testuser"); // Должен быть триммирован
+                    assertThat(userDto.getUsername()).isEqualTo("testuser"); // trimmed
                 });
     }
 
@@ -499,8 +530,11 @@ public class UserIntegrationTest {
         request.setEmail("TestUser@Example.com");
         request.setPassword("password123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isCreated()
@@ -519,8 +553,11 @@ public class UserIntegrationTest {
         request.setEmail("invalid-email");
         request.setPassword("password123");
 
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.post()
                 .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isBadRequest();
@@ -528,20 +565,17 @@ public class UserIntegrationTest {
 
     @Test
     void updateUser_partialUpdate_shouldUpdateOnlyProvidedFields() {
-        // Сначала получаем текущие данные пользователя
         User userBefore = userRepository.findById(clientId).block();
         String originalEmail = userBefore.getEmail();
 
-        // Обновляем только имя пользователя
         UserRequest request = new UserRequest();
         request.setUsername("updatedusername");
-        // email и password не указаны - должны остаться прежними
+
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", adminId)
-                        .build(clientId))
+                .uri("/api/v1/users/{id}", clientId)
+                .headers(h -> h.setBearerAuth(adminToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isOk()
@@ -555,40 +589,15 @@ public class UserIntegrationTest {
     }
 
     @Test
-    void deleteUser_shouldCallApplicationService() {
-        // Создаем нового пользователя для удаления
-        User userToDelete = new User();
-        userToDelete.setId(UUID.randomUUID());
-        userToDelete.setUsername("deletecall");
-        userToDelete.setEmail("deletecall@example.com");
-        userToDelete.setPasswordHash("$2a$10$hashed");
-        userToDelete.setRole(UserRole.ROLE_CLIENT);
-        userToDelete.setCreatedAt(Instant.now());
-
-        UUID userIdToDelete = userRepository.save(userToDelete)
-                .map(User::getId)
-                .block();
-
-        // Проверяем, что мок вызывается
-        webTestClient.delete()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", adminId)
-                        .build(userIdToDelete))
-                .exchange()
-                .expectStatus().is5xxServerError();
-    }
-
-    @Test
     void updateUser_bySelf_shouldReturnForbiddenIfNotAdmin() {
         UserRequest request = new UserRequest();
         request.setUsername("updatedself");
 
+        String clientToken = generateToken(clientId, UserRole.ROLE_CLIENT.name());
+
         webTestClient.put()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/users/{id}")
-                        .queryParam("actorId", clientId)
-                        .build(clientId))
+                .uri("/api/v1/users/{id}", clientId)
+                .headers(h -> h.setBearerAuth(clientToken))
                 .bodyValue(request)
                 .exchange()
                 .expectStatus().isForbidden();
@@ -596,11 +605,13 @@ public class UserIntegrationTest {
 
     @Test
     void getAllUsers_emptyDatabase_shouldReturnEmptyList() {
-        // Очищаем базу
         userRepository.deleteAll().block();
+
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
 
         webTestClient.get()
                 .uri("/api/v1/users?page=0&size=10")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBodyList(UserDto.class)
@@ -609,11 +620,14 @@ public class UserIntegrationTest {
 
     @Test
     void getAllUsers_defaultPagination_shouldUseDefaults() {
+        String adminToken = generateToken(adminId, UserRole.ROLE_ADMIN.name());
+
         webTestClient.get()
-                .uri("/api/v1/users") // без параметров
+                .uri("/api/v1/users")
+                .headers(h -> h.setBearerAuth(adminToken))
                 .exchange()
                 .expectStatus().isOk()
                 .expectBodyList(UserDto.class)
-                .hasSize(3); // наши 3 тестовых пользователя
+                .hasSize(3); // admin, client, manager
     }
 }

@@ -10,7 +10,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.slf4j.*;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -42,7 +41,6 @@ public class UserProductAssignmentController {
             @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
     })
     @PostMapping
-    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<UserProductAssignmentDto> assign(
             @Valid @RequestBody UserProductAssignmentRequest req,
             @AuthenticationPrincipal Jwt jwt,
@@ -51,7 +49,12 @@ public class UserProductAssignmentController {
         if (jwt == null) {
             return ResponseEntity.status(401).build();
         }
-        var assignment = service.assign(req.getUserId(), req.getProductId(), req.getRole());
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+        String actorRole = jwt.getClaimAsString("role"); // may be null; service will fallback if necessary
+
+        var assignment = service.assign(actorId, actorRole, req.getUserId(), req.getProductId(), req.getRole());
         UserProductAssignmentDto dto = service.toDto(assignment);
 
         URI location = uriBuilder.path("/api/v1/assignments/{id}")
@@ -108,7 +111,6 @@ public class UserProductAssignmentController {
             @ApiResponse(responseCode = "503", description = "User or product service is unavailable now")
     })
     @DeleteMapping
-    @PreAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<Void> deleteAssignments(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam(required = false) UUID userId,
@@ -117,7 +119,12 @@ public class UserProductAssignmentController {
         if (jwt == null) {
             return ResponseEntity.status(401).build();
         }
-        service.deleteAssignments(userId, productId);
+        String uid = jwt.getClaimAsString("uid");
+        if (uid == null) uid = jwt.getSubject();
+        UUID actorId = UUID.fromString(uid);
+        String actorRole = jwt.getClaimAsString("role");
+
+        service.deleteAssignments(actorId, actorRole, userId, productId);
         return ResponseEntity.noContent().build();
     }
 }

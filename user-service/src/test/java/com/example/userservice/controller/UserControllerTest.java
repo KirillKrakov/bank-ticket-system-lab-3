@@ -1,4 +1,4 @@
-/*package com.example.userservice.controller;
+package com.example.userservice.controller;
 
 import com.example.userservice.dto.UserDto;
 import com.example.userservice.dto.UserRequest;
@@ -18,6 +18,8 @@ import reactor.test.StepVerifier;
 import java.time.Instant;
 import java.util.UUID;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -29,7 +31,7 @@ class UserControllerTest {
     @InjectMocks
     private UserController userController;
 
-    private UserDto createSampleUserDto() {
+    private UserDto sampleUserDto() {
         UserDto dto = new UserDto();
         dto.setId(UUID.randomUUID());
         dto.setUsername("testuser");
@@ -39,373 +41,218 @@ class UserControllerTest {
         return dto;
     }
 
-    private UserRequest createSampleUserRequest() {
-        UserRequest request = new UserRequest();
-        request.setUsername("newuser");
-        request.setEmail("new@example.com");
-        request.setPassword("Password123");
-        return request;
+    private UserRequest sampleUserRequest() {
+        UserRequest req = new UserRequest();
+        req.setUsername("newuser");
+        req.setEmail("new@example.com");
+        req.setPassword("Password123");
+        return req;
     }
 
     // -----------------------
-    // createUser tests
+    // createUser
     // -----------------------
     @Test
-    public void createUser_success_returnsCreated() {
-        UserRequest request = createSampleUserRequest();
-        UserDto responseDto = createSampleUserDto();
+    void createUser_success() {
+        UserRequest request = sampleUserRequest();
+        UserDto dto = sampleUserDto();
 
-        when(userService.create(request))
-                .thenReturn(Mono.just(responseDto));
+        when(userService.create(request)).thenReturn(Mono.just(dto));
 
         StepVerifier.create(userController.createUser(request))
-                .expectNext(responseDto)
+                .expectNext(dto)
                 .verifyComplete();
     }
 
     @Test
-    public void createUser_serviceThrowsBadRequest_returnsError() {
-        UserRequest request = createSampleUserRequest();
+    void createUser_conflict() {
+        when(userService.create(any(UserRequest.class)))
+                .thenReturn(Mono.error(new ConflictException("Username already exists")));
 
-        when(userService.create(request))
-                .thenReturn(Mono.error(new BadRequestException("Invalid request")));
-
-        StepVerifier.create(userController.createUser(request))
-                .expectError(BadRequestException.class)
-                .verify();
-    }
-
-    @Test
-    public void createUser_serviceThrowsConflict_returnsError() {
-        UserRequest request = createSampleUserRequest();
-
-        when(userService.create(request))
-                .thenReturn(Mono.error(new ConflictException("Username already in use")));
-
-        StepVerifier.create(userController.createUser(request))
+        StepVerifier.create(userController.createUser(sampleUserRequest()))
                 .expectError(ConflictException.class)
                 .verify();
     }
 
     // -----------------------
-    // getAllUsers tests
+    // getAllUsers
     // -----------------------
     @Test
-    public void getAllUsers_success_returnsFlux() {
-        UserDto dto1 = createSampleUserDto();
-        UserDto dto2 = createSampleUserDto();
+    void getAllUsers_success() {
+        UserDto u1 = sampleUserDto();
+        UserDto u2 = sampleUserDto();
 
         when(userService.findAll(0, 20))
-                .thenReturn(Flux.just(dto1, dto2));
+                .thenReturn(Flux.just(u1, u2));
 
         StepVerifier.create(userController.getAllUsers(0, 20))
-                .expectNext(dto1)
-                .expectNext(dto2)
+                .expectNext(u1)
+                .expectNext(u2)
                 .verifyComplete();
     }
 
+    // -----------------------
+    // getUserById
+    // -----------------------
     @Test
-    public void getAllUsers_sizeExceedsMax_returnsBadRequest() {
-        StepVerifier.create(userController.getAllUsers(0, 51))
-                .expectError(IllegalArgumentException.class)
-                .verify();
-    }
+    void getUserById_found() {
+        UUID id = UUID.randomUUID();
+        UserDto dto = sampleUserDto();
+        dto.setId(id);
 
-    @Test
-    public void getAllUsers_negativePage_returnsResults() {
-        UserDto dto = createSampleUserDto();
+        when(userService.findById(id)).thenReturn(Mono.just(dto));
 
-        when(userService.findAll(-1, 10))
-                .thenReturn(Flux.just(dto));
-
-        StepVerifier.create(userController.getAllUsers(-1, 10))
+        StepVerifier.create(userController.getUserById(id))
                 .expectNext(dto)
                 .verifyComplete();
     }
 
     @Test
-    public void getAllUsers_serviceThrowsBadRequest_returnsError() {
-        when(userService.findAll(0, 20))
-                .thenReturn(Flux.error(new BadRequestException("Invalid parameters")));
+    void getUserById_notFound() {
+        UUID id = UUID.randomUUID();
 
-        StepVerifier.create(userController.getAllUsers(0, 20))
-                .expectError(BadRequestException.class)
+        when(userService.findById(id))
+                .thenReturn(Mono.error(new NotFoundException("User not found")));
+
+        StepVerifier.create(userController.getUserById(id))
+                .expectError(NotFoundException.class)
                 .verify();
     }
 
     // -----------------------
-    // getUserById tests
+    // updateUser
     // -----------------------
     @Test
-    public void getUserById_found_returnsDto() {
-        UUID userId = UUID.randomUUID();
-        UserDto dto = createSampleUserDto();
-        dto.setId(userId);
+    void updateUser_success() {
+        UUID id = UUID.randomUUID();
+        UserDto dto = sampleUserDto();
 
-        when(userService.findById(userId))
+        when(userService.update(eq(id), any(UserRequest.class)))
                 .thenReturn(Mono.just(dto));
 
-        StepVerifier.create(userController.getUserById(userId))
+        StepVerifier.create(userController.updateUser(id, sampleUserRequest()))
                 .expectNext(dto)
                 .verifyComplete();
     }
 
     @Test
-    public void getUserById_notFound_returnsError() {
-        UUID userId = UUID.randomUUID();
+    void updateUser_forbidden() {
+        UUID id = UUID.randomUUID();
 
-        when(userService.findById(userId))
-                .thenReturn(Mono.error(new NotFoundException("User not found")));
+        when(userService.update(eq(id), any(UserRequest.class)))
+                .thenReturn(Mono.error(new ForbiddenException("Forbidden")));
 
-        StepVerifier.create(userController.getUserById(userId))
-                .expectError(NotFoundException.class)
-                .verify();
-    }
-
-    // -----------------------
-    // updateUser tests
-    // -----------------------
-    @Test
-    public void updateUser_success_returnsDto() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-        UserRequest request = createSampleUserRequest();
-        UserDto dto = createSampleUserDto();
-
-        when(userService.update(userId, actorId, request))
-                .thenReturn(Mono.just(dto));
-
-        StepVerifier.create(userController.updateUser(userId, actorId, request))
-                .expectNext(dto)
-                .verifyComplete();
-    }
-
-    @Test
-    public void updateUser_forbidden_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-        UserRequest request = createSampleUserRequest();
-
-        when(userService.update(userId, actorId, request))
-                .thenReturn(Mono.error(new ForbiddenException("Access denied")));
-
-        StepVerifier.create(userController.updateUser(userId, actorId, request))
+        StepVerifier.create(userController.updateUser(id, sampleUserRequest()))
                 .expectError(ForbiddenException.class)
                 .verify();
     }
 
-    @Test
-    public void updateUser_notFound_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-        UserRequest request = createSampleUserRequest();
-
-        when(userService.update(userId, actorId, request))
-                .thenReturn(Mono.error(new NotFoundException("User not found")));
-
-        StepVerifier.create(userController.updateUser(userId, actorId, request))
-                .expectError(NotFoundException.class)
-                .verify();
-    }
-
-    @Test
-    public void updateUser_unauthorized_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-        UserRequest request = createSampleUserRequest();
-
-        when(userService.update(userId, actorId, request))
-                .thenReturn(Mono.error(new UnauthorizedException("Actor ID is required")));
-
-        StepVerifier.create(userController.updateUser(userId, actorId, request))
-                .expectError(UnauthorizedException.class)
-                .verify();
-    }
-
     // -----------------------
-    // deleteUser tests
+    // deleteUser
     // -----------------------
     @Test
-    public void deleteUser_success_returnsVoid() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
+    void deleteUser_success() {
+        UUID id = UUID.randomUUID();
 
-        when(userService.delete(userId, actorId))
-                .thenReturn(Mono.empty());
+        when(userService.delete(id)).thenReturn(Mono.empty());
 
-        StepVerifier.create(userController.deleteUser(userId, actorId))
+        StepVerifier.create(userController.deleteUser(id))
                 .verifyComplete();
     }
 
     @Test
-    public void deleteUser_forbidden_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
+    void deleteUser_notFound() {
+        UUID id = UUID.randomUUID();
 
-        when(userService.delete(userId, actorId))
-                .thenReturn(Mono.error(new ForbiddenException("Only ADMIN can perform this action")));
-
-        StepVerifier.create(userController.deleteUser(userId, actorId))
-                .expectError(ForbiddenException.class)
-                .verify();
-    }
-
-    @Test
-    public void deleteUser_notFound_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.delete(userId, actorId))
+        when(userService.delete(id))
                 .thenReturn(Mono.error(new NotFoundException("User not found")));
 
-        StepVerifier.create(userController.deleteUser(userId, actorId))
+        StepVerifier.create(userController.deleteUser(id))
                 .expectError(NotFoundException.class)
                 .verify();
     }
 
     // -----------------------
-    // promoteToManager tests
+    // promote / demote
     // -----------------------
     @Test
-    public void promoteToManager_success_returnsVoid() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
+    void promoteToManager_success() {
+        UUID id = UUID.randomUUID();
 
-        when(userService.promoteToManager(userId, actorId))
+        when(userService.promoteToManager(id)).thenReturn(Mono.empty());
+
+        StepVerifier.create(userController.promoteToManager(id))
+                .verifyComplete();
+    }
+
+    @Test
+    void demoteToClient_success() {
+        UUID id = UUID.randomUUID();
+
+        when(userService.demoteToClient(id)).thenReturn(Mono.empty());
+
+        StepVerifier.create(userController.demoteToClient(id))
+                .verifyComplete();
+    }
+
+    // -----------------------
+    // userExists
+    // -----------------------
+    @Test
+    void userExists_true() {
+        UUID id = UUID.randomUUID();
+
+        when(userService.findById(id))
+                .thenReturn(Mono.just(sampleUserDto()));
+
+        StepVerifier.create(userController.userExists(id))
+                .expectNextMatches(r ->
+                        r.getStatusCode() == HttpStatus.OK &&
+                                Boolean.TRUE.equals(r.getBody()))
+                .verifyComplete();
+    }
+
+    @Test
+    void userExists_false() {
+        UUID id = UUID.randomUUID();
+
+        when(userService.findById(id))
                 .thenReturn(Mono.empty());
 
-        StepVerifier.create(userController.promoteToManager(userId, actorId))
-                .verifyComplete();
-    }
-
-    @Test
-    public void promoteToManager_forbidden_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.promoteToManager(userId, actorId))
-                .thenReturn(Mono.error(new ForbiddenException("Only ADMIN can perform this action")));
-
-        StepVerifier.create(userController.promoteToManager(userId, actorId))
-                .expectError(ForbiddenException.class)
-                .verify();
-    }
-
-    @Test
-    public void promoteToManager_notFound_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.promoteToManager(userId, actorId))
-                .thenReturn(Mono.error(new NotFoundException("User not found")));
-
-        StepVerifier.create(userController.promoteToManager(userId, actorId))
-                .expectError(NotFoundException.class)
-                .verify();
-    }
-
-    // -----------------------
-    // demoteToClient tests
-    // -----------------------
-    @Test
-    public void demoteToClient_success_returnsVoid() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.demoteToClient(userId, actorId))
-                .thenReturn(Mono.empty());
-
-        StepVerifier.create(userController.demoteToClient(userId, actorId))
-                .verifyComplete();
-    }
-
-    @Test
-    public void demoteToClient_forbidden_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.demoteToClient(userId, actorId))
-                .thenReturn(Mono.error(new ForbiddenException("Only ADMIN can perform this action")));
-
-        StepVerifier.create(userController.demoteToClient(userId, actorId))
-                .expectError(ForbiddenException.class)
-                .verify();
-    }
-
-    @Test
-    public void demoteToClient_notFound_returnsError() {
-        UUID userId = UUID.randomUUID();
-        UUID actorId = UUID.randomUUID();
-
-        when(userService.demoteToClient(userId, actorId))
-                .thenReturn(Mono.error(new NotFoundException("User not found")));
-
-        StepVerifier.create(userController.demoteToClient(userId, actorId))
-                .expectError(NotFoundException.class)
-                .verify();
-    }
-
-    // -----------------------
-    // userExists tests
-    // -----------------------
-    @Test
-    public void userExists_found_returnsTrue() {
-        UUID userId = UUID.randomUUID();
-        UserDto dto = createSampleUserDto();
-
-        when(userService.findById(userId))
-                .thenReturn(Mono.just(dto));
-
-        StepVerifier.create(userController.userExists(userId))
-                .expectNextMatches(response ->
-                        response.getStatusCode() == HttpStatus.OK &&
-                                Boolean.TRUE.equals(response.getBody()))
-                .verifyComplete();
-    }
-
-    @Test
-    public void userExists_notFound_returnsFalse() {
-        UUID userId = UUID.randomUUID();
-
-        when(userService.findById(userId))
-                .thenReturn(Mono.empty());
-
-        StepVerifier.create(userController.userExists(userId))
-                .expectNextMatches(response ->
-                        response.getStatusCode() == HttpStatus.OK &&
-                                Boolean.FALSE.equals(response.getBody()))
+        StepVerifier.create(userController.userExists(id))
+                .expectNextMatches(r ->
+                        r.getStatusCode() == HttpStatus.OK &&
+                                Boolean.FALSE.equals(r.getBody()))
                 .verifyComplete();
     }
 
     // -----------------------
-    // getUserRole tests
+    // getUserRole
     // -----------------------
     @Test
-    public void getUserRole_found_returnsRole() {
-        UUID userId = UUID.randomUUID();
-        UserDto dto = createSampleUserDto();
-        dto.setRole(UserRole.ROLE_CLIENT);
+    void getUserRole_found() {
+        UUID id = UUID.randomUUID();
+        UserDto dto = sampleUserDto();
+        dto.setRole(UserRole.ROLE_MANAGER);
 
-        when(userService.findById(userId))
-                .thenReturn(Mono.just(dto));
+        when(userService.findById(id)).thenReturn(Mono.just(dto));
 
-        StepVerifier.create(userController.getUserRole(userId))
-                .expectNextMatches(response ->
-                        response.getStatusCode() == HttpStatus.OK &&
-                                response.getBody() == UserRole.ROLE_CLIENT)
+        StepVerifier.create(userController.getUserRole(id))
+                .expectNextMatches(r ->
+                        r.getStatusCode() == HttpStatus.OK &&
+                                r.getBody() == UserRole.ROLE_MANAGER)
                 .verifyComplete();
     }
 
     @Test
-    public void getUserRole_notFound_returnsNotFound() {
-        UUID userId = UUID.randomUUID();
+    void getUserRole_notFound() {
+        UUID id = UUID.randomUUID();
 
-        when(userService.findById(userId))
-                .thenReturn(Mono.empty());
+        when(userService.findById(id)).thenReturn(Mono.empty());
 
-        StepVerifier.create(userController.getUserRole(userId))
-                .expectNextMatches(response ->
-                        response.getStatusCode() == HttpStatus.NOT_FOUND)
+        StepVerifier.create(userController.getUserRole(id))
+                .expectNextMatches(r ->
+                        r.getStatusCode() == HttpStatus.NOT_FOUND)
                 .verifyComplete();
     }
-}*/
+}
